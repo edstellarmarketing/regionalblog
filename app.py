@@ -1012,28 +1012,78 @@ if upload_type == "HTML File (auto-converts)":
         raw_html = uploaded_file.read().decode("utf-8")
         st.caption(f"Loaded **{uploaded_file.name}** — {len(raw_html):,} characters")
 
-        with st.spinner("Processing HTML..."):
-            processed_html, stats = classify_and_wrap(raw_html)
+        # Step 1: Scan H2s from the HTML and let user select
+        if "raw_html" not in st.session_state or st.session_state.get("raw_html_name") != uploaded_file.name:
+            st.session_state["raw_html"] = raw_html
+            st.session_state["raw_html_name"] = uploaded_file.name
+            # Clear previous blocks
+            if "blocks" in st.session_state:
+                del st.session_state["blocks"]
 
-            # Parse into individual blocks for editing
-            block_soup = BeautifulSoup(processed_html, "html.parser")
-            blocks_list = []
-            for element in block_soup.children:
-                if isinstance(element, NavigableString):
-                    continue
-                if not isinstance(element, Tag):
-                    continue
-                is_embed = element.get("data-rt-embed-type") == "true"
-                blocks_list.append({
-                    "type": "embed" if is_embed else "plain",
-                    "html": str(element),
-                    "tag": element.name,
-                    "preview": element.get_text()[:100].replace("\n", " ").strip(),
-                    "chars": len(str(element)),
-                })
+        # Extract H2 headings from the raw HTML
+        scan_soup = BeautifulSoup(raw_html, "html.parser")
+        h2_tags = scan_soup.find_all("h2")
+        h2_texts = [h2.get_text().strip() for h2 in h2_tags]
 
-            st.session_state["blocks"] = blocks_list
-            st.session_state["stats"] = stats
+        if h2_texts:
+            st.markdown("**Select sections to include:**")
+            selected_h2s = []
+            for i, h2_text in enumerate(h2_texts):
+                checked = st.checkbox(h2_text, value=True, key=f"h2_select_{i}")
+                if checked:
+                    selected_h2s.append(h2_text)
+
+            st.caption(f"{len(selected_h2s)} of {len(h2_texts)} sections selected")
+            st.session_state["selected_h2s"] = selected_h2s
+
+        if st.button("⚡ Process Selected Sections", type="primary", use_container_width=True):
+            with st.spinner("Processing HTML..."):
+                processed_html, stats = classify_and_wrap(raw_html)
+
+                # Parse into individual blocks
+                block_soup = BeautifulSoup(processed_html, "html.parser")
+                all_blocks = []
+                for element in block_soup.children:
+                    if isinstance(element, NavigableString):
+                        continue
+                    if not isinstance(element, Tag):
+                        continue
+                    is_embed = element.get("data-rt-embed-type") == "true"
+                    all_blocks.append({
+                        "type": "embed" if is_embed else "plain",
+                        "html": str(element),
+                        "tag": element.name,
+                        "preview": element.get_text()[:100].replace("\n", " ").strip(),
+                        "chars": len(str(element)),
+                    })
+
+                # Filter blocks based on selected H2s
+                selected_h2s = st.session_state.get("selected_h2s", h2_texts)
+                filtered_blocks = []
+                include_current = True  # Include intro blocks before first H2
+
+                for block in all_blocks:
+                    # Check if this block is an H2
+                    block_soup_check = BeautifulSoup(block["html"], "html.parser")
+                    h2_el = block_soup_check.find("h2")
+
+                    if h2_el and block["type"] == "plain":
+                        h2_text = h2_el.get_text().strip()
+                        include_current = h2_text in selected_h2s
+                        if include_current:
+                            filtered_blocks.append(block)
+                    elif include_current:
+                        filtered_blocks.append(block)
+
+                st.session_state["blocks"] = filtered_blocks
+                st.session_state["stats"] = {
+                    "total_blocks": len(filtered_blocks),
+                    "embed_blocks": sum(1 for b in filtered_blocks if b["type"] == "embed"),
+                    "plain_blocks": sum(1 for b in filtered_blocks if b["type"] == "plain"),
+                    "warnings": stats.get("warnings", []),
+                    "total_chars": sum(b["chars"] for b in filtered_blocks),
+                }
+                st.rerun()
 
 else:
     # CSV upload — pre-formatted Webflow content
