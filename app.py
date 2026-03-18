@@ -692,14 +692,17 @@ if "blocks" in st.session_state:
             is_embed = block["type"] == "embed"
             icon = "🟡" if is_embed else "🟢"
             type_label = "EMBED" if is_embed else "PLAIN"
-            tag_info = "" if is_embed else f" `<{block['tag']}>`"
+            tag_info = "" if is_embed else f" <{block['tag']}>"
 
-            with st.expander(f"{icon} **Block {idx+1}** — {type_label}{tag_info} ({block['chars']:,} chars) | {block['preview'][:60]}"):
-                col_a, col_b = st.columns([4, 1])
+            # Row: delete button + block label (outside expander)
+            row_col1, row_col2 = st.columns([12, 1])
+            with row_col2:
+                if st.button("🗑️", key=f"del_{idx}", help=f"Delete block {idx+1}"):
+                    blocks_to_delete.append(idx)
 
-                with col_a:
+            with row_col1:
+                with st.expander(f"{icon} **Block {idx+1}** — {type_label}{tag_info} ({block['chars']:,} chars) | {block['preview'][:60]}"):
                     if is_embed:
-                        # Show inner HTML (without the wrapper)
                         inner_soup = BeautifulSoup(block["html"], "html.parser")
                         wrapper = inner_soup.find("div", attrs={"data-rt-embed-type": "true"})
                         inner_html = wrapper.decode_contents().strip() if wrapper else block["html"]
@@ -710,12 +713,14 @@ if "blocks" in st.session_state:
                             key=f"edit_{idx}",
                             label_visibility="collapsed"
                         )
-                        # If edited, update the block
                         if edited != inner_html:
                             new_html = f'<div data-rt-embed-type="true">\n{edited}\n</div>'
                             blocks_list[idx]["html"] = new_html
                             blocks_list[idx]["chars"] = len(new_html)
                             blocks_list[idx]["preview"] = BeautifulSoup(edited, "html.parser").get_text()[:100].replace("\n", " ").strip()
+
+                        if block["chars"] > EMBED_CHAR_LIMIT:
+                            st.error(f"⚠️ Exceeds {EMBED_CHAR_LIMIT:,} char limit! ({block['chars']:,} chars)")
                     else:
                         edited = st.text_area(
                             "HTML",
@@ -728,13 +733,6 @@ if "blocks" in st.session_state:
                             blocks_list[idx]["html"] = edited
                             blocks_list[idx]["chars"] = len(edited)
                             blocks_list[idx]["preview"] = BeautifulSoup(edited, "html.parser").get_text()[:100].replace("\n", " ").strip()
-
-                with col_b:
-                    if st.button("🗑️ Delete", key=f"del_{idx}", use_container_width=True):
-                        blocks_to_delete.append(idx)
-
-                    if block["chars"] > EMBED_CHAR_LIMIT and is_embed:
-                        st.error(f"⚠️ {block['chars']:,} ch")
 
         # Process deletions
         if blocks_to_delete:
