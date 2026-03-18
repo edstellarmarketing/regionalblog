@@ -214,7 +214,7 @@ def classify_and_wrap(html_content):
                     "preview": block_html[:150] + "..."
                 })
 
-            wrapped = f'<div data-rt-embed-type="html">\n{block_html}\n</div>'
+            wrapped = f'<div data-rt-embed-type="true">\n{block_html}\n</div>'
             output_parts.append(wrapped)
             embed_count += 1
         else:
@@ -541,13 +541,13 @@ with st.expander("🧪 Test Push (verify embed format)"):
     ], key="test_option", horizontal=True)
 
     if test_content_option == "Embed only (takeaway block)":
-        test_html = '''<div data-rt-embed-type="html">
+        test_html = '''<div data-rt-embed-type="true">
 <div class='takeaway'>  <p>💡 KEY TAKEAWAYS</p>  <ul>    <li>      Edstellar is the best corporate training company in New Zealand with 2,000+ corporate training courses in NZ and 5,000+ trainers across technical, leadership, and behavioural domains.    </li>    <li>      Lumify Work is New Zealand's largest corporate IT training provider and Microsoft NZ's most strategic Learning Partner, training 5,000+ students per year.    </li>    <li>      Skillset NZ stands out for its exclusively B2B model serving large and medium organisations for 30+ years, with verified clients including WorkSafe NZ.    </li>    <li>      Companies were evaluated on trainer quality, NZQA and regulatory alignment, SME and geographic reach beyond Auckland, and post-training support.    </li>  </ul></div>
 </div>'''
     elif test_content_option == "Plain + Embed mix":
         test_html = '''<h2>Test Heading — Plain Rich Text</h2>
 <p>This is a plain paragraph with <strong>bold text</strong> and a <a href="https://www.edstellar.com">link to Edstellar</a>. This should appear as normal rich text in Webflow.</p>
-<div data-rt-embed-type="html">
+<div data-rt-embed-type="true">
 <div class='takeaway'>  <p>💡 KEY TAKEAWAYS</p>  <ul>    <li>      Edstellar is the best corporate training company in New Zealand with 2,000+ corporate training courses.    </li>    <li>      This block should appear as a Code Embed in Webflow editor.    </li>  </ul></div>
 </div>
 <p>This is another plain paragraph after the embed. It should appear as normal rich text.</p>'''
@@ -639,7 +639,7 @@ if "stats" in st.session_state and "processed_html" in st.session_state:
             if not isinstance(element, Tag):
                 continue
             idx += 1
-            is_embed = element.get("data-rt-embed-type") == "html"
+            is_embed = element.get("data-rt-embed-type") == "true"
             char_count = len(str(element))
             preview = element.get_text()[:100].replace("\n", " ").strip()
 
