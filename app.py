@@ -646,51 +646,106 @@ if uploaded_file:
 
     with st.spinner("Processing HTML..."):
         processed_html, stats = classify_and_wrap(raw_html)
-        st.session_state["processed_html"] = processed_html
-        st.session_state["stats"] = stats
 
-if "stats" in st.session_state and "processed_html" in st.session_state:
-    stats = st.session_state["stats"]
-    processed_html = st.session_state["processed_html"]
-
-    # Stats
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Blocks", stats["total_blocks"])
-    c2.metric("🟢 Plain", stats["plain_blocks"])
-    c3.metric("🟡 Embeds", stats["embed_blocks"])
-    c4.metric("Total Size", f"{stats['total_chars']:,} ch")
-
-    if stats["warnings"]:
-        st.warning(f"⚠️ {len(stats['warnings'])} embed(s) exceed {EMBED_CHAR_LIMIT:,} char limit!")
-        for w in stats["warnings"]:
-            st.error(f"**{w['block']}** — {w['chars']:,} chars (limit: {EMBED_CHAR_LIMIT:,})")
-
-    # Tabs
-    tab_blocks, tab_source, tab_download = st.tabs(["📊 Block Analysis", "💻 Source HTML", "📥 Download"])
-
-    with tab_blocks:
+        # Parse into individual blocks for editing
         block_soup = BeautifulSoup(processed_html, "html.parser")
-        idx = 0
+        blocks_list = []
         for element in block_soup.children:
             if isinstance(element, NavigableString):
                 continue
             if not isinstance(element, Tag):
                 continue
-            idx += 1
             is_embed = element.get("data-rt-embed-type") == "true"
-            char_count = len(str(element))
-            preview = element.get_text()[:100].replace("\n", " ").strip()
+            blocks_list.append({
+                "type": "embed" if is_embed else "plain",
+                "html": str(element),
+                "tag": element.name,
+                "preview": element.get_text()[:100].replace("\n", " ").strip(),
+                "chars": len(str(element)),
+            })
 
-            if is_embed:
-                inner = element.decode_contents().strip()
-                with st.expander(f"🟡 **Block {idx}** — EMBED ({char_count:,} chars) | {preview[:60]}..."):
-                    st.code(inner[:3000] + ("..." if len(inner) > 3000 else ""), language="html")
-                    if char_count > EMBED_CHAR_LIMIT:
-                        st.error(f"⚠️ Exceeds {EMBED_CHAR_LIMIT:,} char limit!")
-            else:
-                with st.expander(f"🟢 **Block {idx}** — PLAIN `<{element.name}>` ({char_count:,} chars) | {preview[:60]}"):
-                    st.markdown(str(element), unsafe_allow_html=True)
-                    st.code(str(element)[:1000], language="html")
+        st.session_state["blocks"] = blocks_list
+        st.session_state["stats"] = stats
+
+if "blocks" in st.session_state:
+    blocks_list = st.session_state["blocks"]
+
+    # Rebuild stats from current blocks
+    embed_count = sum(1 for b in blocks_list if b["type"] == "embed")
+    plain_count = sum(1 for b in blocks_list if b["type"] == "plain")
+    total_chars = sum(b["chars"] for b in blocks_list)
+
+    # Stats
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Blocks", len(blocks_list))
+    c2.metric("🟢 Plain", plain_count)
+    c3.metric("🟡 Embeds", embed_count)
+    c4.metric("Total Size", f"{total_chars:,} ch")
+
+    # Tabs
+    tab_blocks, tab_source, tab_download = st.tabs(["📊 Block Analysis", "💻 Source HTML", "📥 Download"])
+
+    with tab_blocks:
+        blocks_to_delete = []
+
+        for idx, block in enumerate(blocks_list):
+            is_embed = block["type"] == "embed"
+            icon = "🟡" if is_embed else "🟢"
+            type_label = "EMBED" if is_embed else "PLAIN"
+            tag_info = "" if is_embed else f" `<{block['tag']}>`"
+
+            with st.expander(f"{icon} **Block {idx+1}** — {type_label}{tag_info} ({block['chars']:,} chars) | {block['preview'][:60]}"):
+                col_a, col_b = st.columns([4, 1])
+
+                with col_a:
+                    if is_embed:
+                        # Show inner HTML (without the wrapper)
+                        inner_soup = BeautifulSoup(block["html"], "html.parser")
+                        wrapper = inner_soup.find("div", attrs={"data-rt-embed-type": "true"})
+                        inner_html = wrapper.decode_contents().strip() if wrapper else block["html"]
+                        edited = st.text_area(
+                            "HTML",
+                            value=inner_html,
+                            height=200,
+                            key=f"edit_{idx}",
+                            label_visibility="collapsed"
+                        )
+                        # If edited, update the block
+                        if edited != inner_html:
+                            new_html = f'<div data-rt-embed-type="true">\n{edited}\n</div>'
+                            blocks_list[idx]["html"] = new_html
+                            blocks_list[idx]["chars"] = len(new_html)
+                            blocks_list[idx]["preview"] = BeautifulSoup(edited, "html.parser").get_text()[:100].replace("\n", " ").strip()
+                    else:
+                        edited = st.text_area(
+                            "HTML",
+                            value=block["html"],
+                            height=100,
+                            key=f"edit_{idx}",
+                            label_visibility="collapsed"
+                        )
+                        if edited != block["html"]:
+                            blocks_list[idx]["html"] = edited
+                            blocks_list[idx]["chars"] = len(edited)
+                            blocks_list[idx]["preview"] = BeautifulSoup(edited, "html.parser").get_text()[:100].replace("\n", " ").strip()
+
+                with col_b:
+                    if st.button("🗑️ Delete", key=f"del_{idx}", use_container_width=True):
+                        blocks_to_delete.append(idx)
+
+                    if block["chars"] > EMBED_CHAR_LIMIT and is_embed:
+                        st.error(f"⚠️ {block['chars']:,} ch")
+
+        # Process deletions
+        if blocks_to_delete:
+            for idx in sorted(blocks_to_delete, reverse=True):
+                blocks_list.pop(idx)
+            st.session_state["blocks"] = blocks_list
+            st.rerun()
+
+    # Rebuild processed HTML from blocks
+    processed_html = "\n".join(b["html"] for b in blocks_list)
+    st.session_state["processed_html"] = processed_html
 
     with tab_source:
         st.code(processed_html[:15000] + ("\n\n... [TRUNCATED]" if len(processed_html) > 15000 else ""),
