@@ -691,18 +691,30 @@ if "blocks" in st.session_state:
     tab_blocks, tab_source, tab_download = st.tabs(["📊 Block Analysis", "💻 Source HTML", "📥 Download"])
 
     with tab_blocks:
+        # Check if a pending delete was triggered
+        if st.session_state.get("pending_delete"):
+            indices_to_delete = st.session_state.pop("pending_delete")
+            for idx in sorted(indices_to_delete, reverse=True):
+                blocks_list.pop(idx)
+            st.session_state["blocks"] = blocks_list
+            st.session_state["block_version"] = ver + 1
+            st.rerun()
+
         # Select All / Deselect All controls
         sel_col1, sel_col2, sel_col3 = st.columns([2, 2, 8])
+
+        def select_all_cb():
+            for i in range(len(st.session_state["blocks"])):
+                st.session_state[f"chk_v{ver}_{i}"] = True
+
+        def deselect_all_cb():
+            for i in range(len(st.session_state["blocks"])):
+                st.session_state[f"chk_v{ver}_{i}"] = False
+
         with sel_col1:
-            if st.button("☑️ Select All", key=f"select_all_v{ver}", use_container_width=True):
-                for i in range(len(blocks_list)):
-                    st.session_state[f"chk_v{ver}_{i}"] = True
-                st.rerun()
+            st.button("☑️ Select All", key=f"select_all_v{ver}", use_container_width=True, on_click=select_all_cb)
         with sel_col2:
-            if st.button("⬜ Deselect All", key=f"deselect_all_v{ver}", use_container_width=True):
-                for i in range(len(blocks_list)):
-                    st.session_state[f"chk_v{ver}_{i}"] = False
-                st.rerun()
+            st.button("⬜ Deselect All", key=f"deselect_all_v{ver}", use_container_width=True, on_click=deselect_all_cb)
 
         # Block list with checkboxes
         selected_indices = []
@@ -756,12 +768,17 @@ if "blocks" in st.session_state:
         # Delete selected button
         if selected_indices:
             st.warning(f"**{len(selected_indices)} block(s) selected**")
-            if st.button(f"🗑️ Delete {len(selected_indices)} Selected Block(s)", type="primary", key=f"delete_v{ver}", use_container_width=True):
-                for idx in sorted(selected_indices, reverse=True):
-                    blocks_list.pop(idx)
-                st.session_state["blocks"] = blocks_list
-                st.session_state["block_version"] = ver + 1  # bump version → fresh keys
-                st.rerun()
+
+            def do_delete():
+                st.session_state["pending_delete"] = selected_indices
+
+            st.button(
+                f"🗑️ Delete {len(selected_indices)} Selected Block(s)",
+                type="primary",
+                key=f"delete_v{ver}",
+                use_container_width=True,
+                on_click=do_delete
+            )
 
     # Rebuild processed HTML from blocks
     processed_html = "\n".join(b["html"] for b in blocks_list)
