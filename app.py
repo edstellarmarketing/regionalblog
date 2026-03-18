@@ -1328,7 +1328,7 @@ if "blocks" in st.session_state:
             extra["new-format-blog"] = new_format_blog
             extra["faqs-section"] = new_faqs_section
 
-            st.info(f"**Create:** {new_name}\n\nSlug: `{new_slug}` | Content: {stats['total_chars']:,} chars | Status: Draft")
+            st.info(f"**Create:** {new_name}\n\nSlug: `{new_slug}` | Content: {total_chars:,} chars | Status: Draft")
 
             fields_summary = ", ".join(f"{k}" for k in extra.keys() if extra[k])
             st.caption(f"Extra fields: {fields_summary}")
