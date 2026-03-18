@@ -650,14 +650,68 @@ if uploaded_file:
         # Parse into individual blocks for editing
         block_soup = BeautifulSoup(processed_html, "html.parser")
         blocks_list = []
+        company_num = 0
         for element in block_soup.children:
             if isinstance(element, NavigableString):
                 continue
             if not isinstance(element, Tag):
                 continue
             is_embed = element.get("data-rt-embed-type") == "true"
+
+            # Determine block name based on content
+            name = ""
+            if is_embed:
+                inner = element.find()
+                if inner:
+                    classes = set(inner.get("class", []))
+                    if "takeaway" in classes or "key-takeaways" in classes:
+                        name = "📌 Key Takeaways"
+                    elif "criteria" in classes or "eval-grid" in classes:
+                        name = "📊 Evaluation Criteria"
+                    elif "table-scroll" in classes or "table-wrap" in classes:
+                        name = "📋 Comparison Table"
+                    elif "copy-div" in classes:
+                        name = "🖼️ Infographic Copy"
+                    elif "infographic-placeholder" in classes:
+                        name = "🖼️ Infographic Placeholder"
+                    elif "co-card" in classes or "company-profile" in classes:
+                        company_num += 1
+                        # Try to get company name from h3
+                        h3 = inner.find("h3")
+                        co_name = h3.get_text()[:40] if h3 else f"Company {company_num}"
+                        name = f"🏢 {co_name}"
+                    elif "testimonial" in classes or "expert-quote" in classes:
+                        # Get author name
+                        author = inner.find("b") or inner.find(class_="ename") or inner.find(class_="attribution")
+                        author_name = author.get_text()[:30].strip() if author else "Expert"
+                        name = f"💬 Quote: {author_name}"
+                    elif "faq" in classes:
+                        name = "❓ FAQ Section"
+                    elif "cta" in classes or "cta-block" in classes:
+                        name = "🚀 CTA Block"
+                    elif "steps-list" in classes:
+                        name = "📝 How to Choose Steps"
+                    elif "related-reading" in classes:
+                        name = "📚 Related Reading"
+                    elif "author-block" in classes:
+                        name = "✍️ Author Attribution"
+                    elif inner.name == "details":
+                        q = inner.find("summary") or inner.find("p")
+                        q_text = q.get_text()[:40] if q else "FAQ"
+                        name = f"❓ FAQ: {q_text}"
+                    else:
+                        name = f"🟡 Embed ({', '.join(classes) or inner.name})"
+            else:
+                if element.name in ("h1", "h2", "h3"):
+                    name = f"📌 {element.get_text()[:50]}"
+                elif element.name == "p":
+                    name = f"📝 {element.get_text()[:50]}"
+                else:
+                    name = f"🟢 {element.name}"
+
             blocks_list.append({
                 "type": "embed" if is_embed else "plain",
+                "name": name,
                 "html": str(element),
                 "tag": element.name,
                 "preview": element.get_text()[:100].replace("\n", " ").strip(),
@@ -732,7 +786,8 @@ if "blocks" in st.session_state:
                     selected_indices.append(idx)
 
             with block_col:
-                with st.expander(f"{icon} **Block {idx+1}** — {type_label}{tag_info} ({block['chars']:,} chars) | {block['preview'][:60]}"):
+                label = f"{icon} **Block {idx+1}** — {block.get('name', type_label)} ({block['chars']:,} chars)"
+                with st.expander(label):
                     if is_embed:
                         inner_soup = BeautifulSoup(block["html"], "html.parser")
                         wrapper = inner_soup.find("div", attrs={"data-rt-embed-type": "true"})
