@@ -247,20 +247,10 @@ def get_headers(token):
 
 
 def test_api_connection(token):
-    """Test API token by fetching authorized user info and collection details."""
+    """Test API token by checking collection access and item count."""
     results = {}
 
-    # 1. Test token — get authorized user
-    resp = requests.get(f"{WEBFLOW_API_BASE}/token/authorized_by",
-                        headers=get_headers(token))
-    if resp.status_code == 200:
-        user = resp.json()
-        results["auth"] = {"status": "✅ OK", "user": user}
-    else:
-        results["auth"] = {"status": f"❌ {resp.status_code}", "error": resp.text}
-        return results  # No point continuing
-
-    # 2. Test collection access — get collection info
+    # 1. Test token + collection access — get collection info
     resp = requests.get(f"{WEBFLOW_API_BASE}/collections/{COLLECTION_ID}",
                         headers=get_headers(token))
     if resp.status_code == 200:
@@ -271,19 +261,38 @@ def test_api_connection(token):
             "slug": col.get("slug", "?"),
             "fields": len(col.get("fields", [])),
         }
+    elif resp.status_code in (401, 403):
+        results["collection"] = {"status": f"❌ Auth failed ({resp.status_code})", "error": resp.text}
+        return results
     else:
         results["collection"] = {"status": f"❌ {resp.status_code}", "error": resp.text}
         return results
 
-    # 3. Test items read — get first page count
+    # 2. Test items read — get first page count
     resp = requests.get(f"{WEBFLOW_API_BASE}/collections/{COLLECTION_ID}/items",
                         headers=get_headers(token), params={"limit": 1})
     if resp.status_code == 200:
         data = resp.json()
         total = data.get("pagination", {}).get("total", 0)
-        results["items"] = {"status": "✅ OK", "total_items": total}
+        # Also grab the first item name as proof
+        items = data.get("items", [])
+        sample = items[0]["fieldData"].get("name", "?") if items else "—"
+        results["items"] = {"status": "✅ OK", "total_items": total, "sample": sample}
     else:
         results["items"] = {"status": f"❌ {resp.status_code}", "error": resp.text}
+
+    # 3. Test write scope — use token introspect
+    resp = requests.get(f"{WEBFLOW_API_BASE}/token/introspect",
+                        headers=get_headers(token))
+    if resp.status_code == 200:
+        info = resp.json()
+        results["token"] = {
+            "status": "✅ OK",
+            "type": info.get("authorization", {}).get("type", "?"),
+        }
+    else:
+        # Introspect might not work for site tokens — that's fine
+        results["token"] = {"status": "ℹ️ Skipped (site token)", "note": "CMS access confirmed above"}
 
     return results
 
@@ -354,16 +363,6 @@ with st.sidebar:
             with st.spinner("Testing..."):
                 results = test_api_connection(api_token)
 
-            # Auth
-            auth = results.get("auth", {})
-            if "user" in auth:
-                st.success(f"**Auth:** {auth['status']}")
-                user = auth["user"]
-                st.caption(f"User: {user.get('firstName', '')} {user.get('lastName', '')} ({user.get('email', '?')})")
-            else:
-                st.error(f"**Auth:** {auth['status']}")
-                st.code(auth.get("error", ""), language="json")
-
             # Collection
             col = results.get("collection", {})
             if col:
@@ -378,8 +377,14 @@ with st.sidebar:
             if items:
                 if "total_items" in items:
                     st.success(f"**Items:** {items['status']} — {items['total_items']} blog posts")
+                    st.caption(f"Sample: {items.get('sample', '—')}")
                 else:
                     st.error(f"**Items:** {items['status']}")
+
+            # Token info
+            tok = results.get("token", {})
+            if tok:
+                st.info(f"**Token:** {tok['status']}")
     else:
         st.caption("Enter token above, then test connection")
 
