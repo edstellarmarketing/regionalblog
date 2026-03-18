@@ -274,6 +274,56 @@ def split_into_blocks(html_content):
     return blocks
 
 
+# ─── CONVERSION LAYER ─────────────────────────────────────────────────────────
+# Transforms HTML file format → Webflow template format before wrapping.
+# Each function handles one section type.
+
+def convert_key_takeaways(html_str):
+    """
+    Input:  <div class="key-takeaways"><h3>Key Takeaways</h3><ul><li>...</li></ul></div>
+    Output: <div class="takeaway"><p>💡 KEY TAKEAWAYS</p><ul><li>...</li></ul></div>
+    """
+    soup = BeautifulSoup(html_str, "html.parser")
+    div = soup.find("div", class_="key-takeaways")
+    if not div:
+        return html_str  # no match, return as-is
+
+    # Change class
+    div["class"] = ["takeaway"]
+
+    # Replace <h3> with <p>💡 KEY TAKEAWAYS</p>
+    h3 = div.find("h3")
+    if h3:
+        new_p = soup.new_tag("p")
+        new_p.string = "💡 KEY TAKEAWAYS"
+        h3.replace_with(new_p)
+
+    return str(div)
+
+
+def convert_block(block_type, block_html):
+    """
+    Apply the appropriate conversion based on the block's content.
+    Returns converted HTML string.
+    """
+    soup = BeautifulSoup(block_html, "html.parser")
+    first_tag = soup.find()
+
+    if not first_tag:
+        return block_html
+
+    classes = set(first_tag.get("class", []))
+
+    # Key Takeaways
+    if "key-takeaways" in classes:
+        return convert_key_takeaways(block_html)
+
+    # More converters will be added here section by section
+    # e.g. eval-grid → criteria, company-profile → co-card, etc.
+
+    return block_html
+
+
 def classify_and_wrap(html_content):
     blocks = split_into_blocks(html_content)
 
@@ -284,6 +334,9 @@ def classify_and_wrap(html_content):
 
     for block_type, block_html in blocks:
         if block_type == "embed":
+            # Apply conversion (HTML file format → Webflow format)
+            block_html = convert_block(block_type, block_html)
+
             if len(block_html) > EMBED_CHAR_LIMIT:
                 soup = BeautifulSoup(block_html, "html.parser")
                 first_tag = soup.find()
