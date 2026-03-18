@@ -72,88 +72,124 @@ def is_embed_block(tag):
     return False
 
 
+def unwrap_containers(soup):
+    """
+    Unwrap generic container tags (article, main, section, div without embed class)
+    to get to the actual content blocks inside. Recursively unwraps nested containers.
+    """
+    # Tags that are generic wrappers (not embed content)
+    WRAPPER_TAGS = {"article", "main", "section", "header", "footer", "aside", "nav"}
+
+    children = list(soup.children)
+
+    # If there's exactly one child and it's a wrapper tag, unwrap it
+    real_children = [c for c in children if isinstance(c, Tag) or
+                     (isinstance(c, NavigableString) and str(c).strip())]
+
+    if len(real_children) == 1 and isinstance(real_children[0], Tag):
+        child = real_children[0]
+        # Unwrap known wrapper tags
+        if child.name in WRAPPER_TAGS:
+            return unwrap_containers(child)
+        # Unwrap <div> WITHOUT embed classes (generic wrapper div)
+        if child.name == "div" and not has_embed_class(child) and not child.get("class"):
+            return unwrap_containers(child)
+
+    return soup
+
+
+def process_element(element, blocks, pending_style_ref):
+    """Process a single element and append to blocks list."""
+    pending_style = pending_style_ref[0]
+
+    if isinstance(element, NavigableString):
+        text = str(element).strip()
+        if text and text not in ('\n', '\r\n'):
+            if '<div' in text or '<table' in text or '<style' in text:
+                sub_soup = BeautifulSoup(text, "html.parser")
+                for sub_el in sub_soup.children:
+                    if isinstance(sub_el, Tag):
+                        if is_embed_block(sub_el):
+                            blocks.append(("embed", str(sub_el)))
+                        else:
+                            blocks.append(("plain", str(sub_el)))
+                    elif isinstance(sub_el, NavigableString) and str(sub_el).strip():
+                        blocks.append(("plain", str(sub_el)))
+        return
+
+    if not isinstance(element, Tag):
+        return
+
+    el_html = str(element)
+
+    # <style> → merge with next embed
+    if element.name == "style":
+        pending_style_ref[0] = el_html
+        return
+
+    # Top-level embed
+    if is_embed_block(element):
+        embed_html = el_html
+        if pending_style_ref[0]:
+            embed_html = pending_style_ref[0] + "\n" + embed_html
+            pending_style_ref[0] = None
+        blocks.append(("embed", embed_html))
+        return
+
+    # <p> containing embed children (parser absorbed divs into p)
+    if element.name == "p":
+        has_inner_embeds = False
+        for child in element.children:
+            if isinstance(child, Tag) and is_embed_block(child):
+                has_inner_embeds = True
+                break
+
+        if has_inner_embeds:
+            current_plain = []
+            for child in element.children:
+                if isinstance(child, Tag) and is_embed_block(child):
+                    if current_plain:
+                        plain_html = "".join(str(c) for c in current_plain).strip()
+                        if plain_html and plain_html not in ("<br/>", "<br>", ""):
+                            blocks.append(("plain", f"<p>{plain_html}</p>"))
+                        current_plain = []
+                    embed_html = str(child)
+                    if pending_style_ref[0]:
+                        embed_html = pending_style_ref[0] + "\n" + embed_html
+                        pending_style_ref[0] = None
+                    blocks.append(("embed", embed_html))
+                else:
+                    current_plain.append(child)
+            if current_plain:
+                plain_html = "".join(str(c) for c in current_plain).strip()
+                if plain_html and plain_html not in ("<br/>", "<br>", ""):
+                    blocks.append(("plain", f"<p>{plain_html}</p>"))
+            return
+
+    # Flush pending style
+    if pending_style_ref[0]:
+        blocks.append(("embed", pending_style_ref[0]))
+        pending_style_ref[0] = None
+
+    # Plain rich text
+    blocks.append(("plain", el_html))
+
+
 def split_into_blocks(html_content):
     html_content = normalize_html(html_content)
     soup = BeautifulSoup(html_content, "html.parser")
 
+    # Unwrap generic containers (article, main, section, etc.)
+    soup = unwrap_containers(soup)
+
     blocks = []
-    pending_style = None
+    pending_style_ref = [None]  # mutable ref for nested function
 
     for element in soup.children:
-        if isinstance(element, NavigableString):
-            text = str(element).strip()
-            if text and text not in ('\n', '\r\n'):
-                if '<div' in text or '<table' in text or '<style' in text:
-                    sub_soup = BeautifulSoup(text, "html.parser")
-                    for sub_el in sub_soup.children:
-                        if isinstance(sub_el, Tag):
-                            if is_embed_block(sub_el):
-                                blocks.append(("embed", str(sub_el)))
-                            else:
-                                blocks.append(("plain", str(sub_el)))
-                        elif isinstance(sub_el, NavigableString) and str(sub_el).strip():
-                            blocks.append(("plain", str(sub_el)))
-            continue
+        process_element(element, blocks, pending_style_ref)
 
-        if not isinstance(element, Tag):
-            continue
-
-        el_html = str(element)
-
-        # <style> → merge with next embed
-        if element.name == "style":
-            pending_style = el_html
-            continue
-
-        # Top-level embed
-        if is_embed_block(element):
-            embed_html = el_html
-            if pending_style:
-                embed_html = pending_style + "\n" + embed_html
-                pending_style = None
-            blocks.append(("embed", embed_html))
-            continue
-
-        # <p> containing embed children (parser absorbed divs into p)
-        if element.name == "p":
-            has_inner_embeds = False
-            for child in element.children:
-                if isinstance(child, Tag) and is_embed_block(child):
-                    has_inner_embeds = True
-                    break
-
-            if has_inner_embeds:
-                current_plain = []
-                for child in element.children:
-                    if isinstance(child, Tag) and is_embed_block(child):
-                        if current_plain:
-                            plain_html = "".join(str(c) for c in current_plain).strip()
-                            if plain_html and plain_html not in ("<br/>", "<br>", ""):
-                                blocks.append(("plain", f"<p>{plain_html}</p>"))
-                            current_plain = []
-                        embed_html = str(child)
-                        if pending_style:
-                            embed_html = pending_style + "\n" + embed_html
-                            pending_style = None
-                        blocks.append(("embed", embed_html))
-                    else:
-                        current_plain.append(child)
-                if current_plain:
-                    plain_html = "".join(str(c) for c in current_plain).strip()
-                    if plain_html and plain_html not in ("<br/>", "<br>", ""):
-                        blocks.append(("plain", f"<p>{plain_html}</p>"))
-                continue
-
-        # Flush pending style
-        if pending_style:
-            blocks.append(("embed", pending_style))
-            pending_style = None
-
-        # Plain rich text
-        blocks.append(("plain", el_html))
-
-    if pending_style:
-        blocks.append(("embed", pending_style))
+    if pending_style_ref[0]:
+        blocks.append(("embed", pending_style_ref[0]))
 
     return blocks
 
