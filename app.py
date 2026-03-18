@@ -10,20 +10,50 @@ COLLECTION_ID = "64ac3a242208dda62b6e6a90"
 WEBFLOW_API_BASE = "https://api.webflow.com/v2"
 EMBED_CHAR_LIMIT = 10000
 
-# CSS classes that indicate embed blocks
-EMBED_CLASSES = {
-    "takeaway",
-    "criteria", "crit-item", "crit-icon", "crit-header",
-    "table-scroll", "comp-table", "rank",
-    "co-card", "co-hdr", "co-logo", "meta-row", "chip",
-    "insight", "insight-icon", "ename", "author-del",
-    "nl-card", "nl-grid", "nl-stat", "nl-num", "nl-source", "nl-p",
-    "testimonial", "linkedin-topic", "div-flex", "testimonial-image",
-    "linked-in", "author-name", "name-flex", "author-pos",
-    "faq-item", "faq-question", "faq-answer", "toggle-icon",
-    "cta", "bg-green", "cta-btn",
+# ─── EMBED DETECTION RULES ────────────────────────────────────────────────────
+# Top-level CSS classes that mark an element as an EMBED block.
+# If any of these classes appear on a tag, the ENTIRE tag (and its children)
+# gets wrapped with <div data-rt-embed-type='true'>
+EMBED_TOP_CLASSES = {
+    # Key Takeaways box
+    "takeaway", "key-takeaways",
+    # Evaluation Criteria grid
+    "criteria",
+    # Comparison Table
+    "table-scroll",
+    # Infographic copy-to-clipboard
+    "copy-div",
+    # Company Profile card
+    "co-card",
+    # Testimonial / Expert Quote
+    "testimonial",
+    # FAQ section (on <section> tag)
+    "faq",
+    # CTA block
+    "cta",
+    # Stats grid (from Malaysia template)
+    "nl-card",
+    # Related reading
+    "related-reading",
+    # Author block
+    "author-block",
+    # Infographic placeholder
+    "infographic-placeholder",
+    # Expert quote (standalone, outside co-card)
+    "expert-quote",
+    # CTA block (aside variant)
+    "cta-block",
+    # Steps list
+    "steps-list",
 }
 
+# Container tags to UNWRAP (strip the tag, process its children individually)
+UNWRAP_TAGS = {"article", "main", "header", "nav"}
+
+# Section/aside: unwrap ONLY if they don't have an embed class
+# (e.g. <section class="faq"> is embed, but <section> without class is unwrap)
+
+# Tags that are always plain rich text (when no embed class present)
 PLAIN_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "li",
               "a", "strong", "em", "b", "i", "blockquote", "figure",
               "figcaption", "br", "hr", "img"}
@@ -39,157 +69,203 @@ def unescape_if_needed(html_content):
 
 def normalize_html(html_content):
     html_content = unescape_if_needed(html_content)
-    body_match = re.search(r'<body[^>]*>(.*?)</body>', html_content, re.DOTALL)
-    if body_match:
-        html_content = body_match.group(1)
+    # Use BeautifulSoup to extract <body> content reliably
+    soup = BeautifulSoup(html_content, "html.parser")
+    body = soup.find("body")
+    if body:
+        # Return the inner HTML of <body>
+        return body.decode_contents().strip()
+    # If no <body>, check for <article> directly
+    article = soup.find("article")
+    if article:
+        return str(article)
+    # Return as-is
     return html_content.strip()
 
 
 # ─── BLOCK CLASSIFIER ────────────────────────────────────────────────────────
 
-def has_embed_class(tag):
+def get_classes(tag):
+    """Get classes as a set."""
     classes = tag.get("class", [])
     if isinstance(classes, str):
         classes = classes.split()
-    return bool(set(classes) & EMBED_CLASSES)
+    return set(classes)
 
 
 def is_embed_block(tag):
+    """Check if a tag should be treated as an embed block."""
     if not isinstance(tag, Tag):
         return False
-    if tag.name == "style":
+
+    classes = get_classes(tag)
+
+    # Direct match: tag has a known embed class
+    if classes & EMBED_TOP_CLASSES:
         return True
-    if tag.name == "div" and tag.get("class"):
+
+    # <div> with ANY class (likely a styled component)
+    if tag.name == "div" and classes:
         return True
-    if tag.name == "table" and tag.get("class"):
+
+    # <section> with a class (like <section class="faq">)
+    if tag.name == "section" and classes:
         return True
-    if has_embed_class(tag):
+
+    # <aside> with a class (like <aside class="cta-block">)
+    if tag.name == "aside" and classes:
         return True
-    if tag.name == "div":
-        for desc in tag.descendants:
-            if isinstance(desc, Tag) and has_embed_class(desc):
-                return True
+
+    # <table> with a class
+    if tag.name == "table" and classes:
+        return True
+
+    # <details> tags (FAQ items when not inside a faq section)
+    if tag.name == "details":
+        return True
+
+    return False
+
+
+def should_unwrap(tag):
+    """Check if a container tag should be unwrapped (children processed individually)."""
+    if not isinstance(tag, Tag):
+        return False
+
+    classes = get_classes(tag)
+
+    # Always unwrap these tags
+    if tag.name in UNWRAP_TAGS:
+        return True
+
+    # <section> without embed class → unwrap
+    if tag.name == "section" and not (classes & EMBED_TOP_CLASSES):
+        return True
+
+    # <aside> without embed class → unwrap
+    if tag.name == "aside" and not (classes & EMBED_TOP_CLASSES) and not classes:
+        return True
+
+    # <div> without ANY class → generic wrapper, unwrap
+    if tag.name == "div" and not classes:
+        return True
+
+    return False
+
+
+def is_noise(element):
+    """Check if an element is noise (comments, section labels, etc.) to strip."""
+    if isinstance(element, NavigableString):
+        text = str(element).strip()
+        if not text:
+            return True
+        # Strip section comment labels like "Section 1: Title"
+        if re.match(r'^(Section \d+|Company \d+|Mid-Blog|Expert Quote|End)', text, re.IGNORECASE):
+            return True
+        # Strip bare text that looks like a comment
+        if text.startswith("REPLACE:") or text.startswith("PLACEHOLDER:"):
+            return True
     return False
 
 
 def unwrap_containers(soup):
     """
-    Unwrap generic container tags (article, main, section, div without embed class)
-    to get to the actual content blocks inside. Recursively unwraps nested containers.
+    Unwrap the outermost generic container if there's only one.
+    e.g. <article><...content...></article> → process content directly.
     """
-    # Tags that are generic wrappers (not embed content)
-    WRAPPER_TAGS = {"article", "main", "section", "header", "footer", "aside", "nav"}
-
     children = list(soup.children)
-
-    # If there's exactly one child and it's a wrapper tag, unwrap it
     real_children = [c for c in children if isinstance(c, Tag) or
                      (isinstance(c, NavigableString) and str(c).strip())]
 
     if len(real_children) == 1 and isinstance(real_children[0], Tag):
         child = real_children[0]
-        # Unwrap known wrapper tags
-        if child.name in WRAPPER_TAGS:
+        if child.name in UNWRAP_TAGS:
             return unwrap_containers(child)
-        # Unwrap <div> WITHOUT embed classes (generic wrapper div)
-        if child.name == "div" and not has_embed_class(child) and not child.get("class"):
+        if child.name == "div" and not get_classes(child):
             return unwrap_containers(child)
 
     return soup
 
 
-def process_element(element, blocks, pending_style_ref):
-    """Process a single element and append to blocks list."""
-    pending_style = pending_style_ref[0]
+def process_children(parent, blocks):
+    """
+    Recursively process children of a container element.
+    - Embed blocks → collect as embed
+    - Unwrappable containers → recurse into their children
+    - Plain tags → collect as plain
+    - Noise text → skip
+    - <style> → skip (Webflow has its own CSS)
+    """
+    for element in parent.children:
+        # Skip noise (empty text, section labels, placeholders)
+        if is_noise(element):
+            continue
 
-    if isinstance(element, NavigableString):
-        text = str(element).strip()
-        if text and text not in ('\n', '\r\n'):
-            if '<div' in text or '<table' in text or '<style' in text:
-                sub_soup = BeautifulSoup(text, "html.parser")
-                for sub_el in sub_soup.children:
-                    if isinstance(sub_el, Tag):
-                        if is_embed_block(sub_el):
-                            blocks.append(("embed", str(sub_el)))
-                        else:
-                            blocks.append(("plain", str(sub_el)))
-                    elif isinstance(sub_el, NavigableString) and str(sub_el).strip():
-                        blocks.append(("plain", str(sub_el)))
-        return
+        # Skip non-tag, non-string
+        if not isinstance(element, (Tag, NavigableString)):
+            continue
 
-    if not isinstance(element, Tag):
-        return
+        # NavigableString that's not noise — skip loose text
+        if isinstance(element, NavigableString):
+            continue
 
-    el_html = str(element)
+        # <style> → skip entirely (Webflow uses its own stylesheets)
+        if element.name == "style":
+            continue
 
-    # <style> → merge with next embed
-    if element.name == "style":
-        pending_style_ref[0] = el_html
-        return
+        # <script> → skip
+        if element.name == "script":
+            continue
 
-    # Top-level embed
-    if is_embed_block(element):
-        embed_html = el_html
-        if pending_style_ref[0]:
-            embed_html = pending_style_ref[0] + "\n" + embed_html
-            pending_style_ref[0] = None
-        blocks.append(("embed", embed_html))
-        return
+        # Is this an embed block?
+        if is_embed_block(element):
+            blocks.append(("embed", str(element)))
+            continue
 
-    # <p> containing embed children (parser absorbed divs into p)
-    if element.name == "p":
-        has_inner_embeds = False
-        for child in element.children:
-            if isinstance(child, Tag) and is_embed_block(child):
-                has_inner_embeds = True
-                break
+        # Should this container be unwrapped?
+        if should_unwrap(element):
+            process_children(element, blocks)
+            continue
 
-        if has_inner_embeds:
-            current_plain = []
-            for child in element.children:
-                if isinstance(child, Tag) and is_embed_block(child):
-                    if current_plain:
-                        plain_html = "".join(str(c) for c in current_plain).strip()
-                        if plain_html and plain_html not in ("<br/>", "<br>", ""):
-                            blocks.append(("plain", f"<p>{plain_html}</p>"))
-                        current_plain = []
-                    embed_html = str(child)
-                    if pending_style_ref[0]:
-                        embed_html = pending_style_ref[0] + "\n" + embed_html
-                        pending_style_ref[0] = None
-                    blocks.append(("embed", embed_html))
-                else:
-                    current_plain.append(child)
-            if current_plain:
-                plain_html = "".join(str(c) for c in current_plain).strip()
-                if plain_html and plain_html not in ("<br/>", "<br>", ""):
-                    blocks.append(("plain", f"<p>{plain_html}</p>"))
-            return
+        # <p> that might contain embed children (parser quirk)
+        if element.name == "p":
+            has_inner_embeds = any(
+                isinstance(child, Tag) and is_embed_block(child)
+                for child in element.children
+            )
+            if has_inner_embeds:
+                current_plain = []
+                for child in element.children:
+                    if isinstance(child, Tag) and is_embed_block(child):
+                        if current_plain:
+                            plain_html = "".join(str(c) for c in current_plain).strip()
+                            if plain_html and plain_html not in ("<br/>", "<br>", ""):
+                                blocks.append(("plain", f"<p>{plain_html}</p>"))
+                            current_plain = []
+                        blocks.append(("embed", str(child)))
+                    else:
+                        current_plain.append(child)
+                if current_plain:
+                    plain_html = "".join(str(c) for c in current_plain).strip()
+                    if plain_html and plain_html not in ("<br/>", "<br>", ""):
+                        blocks.append(("plain", f"<p>{plain_html}</p>"))
+                continue
 
-    # Flush pending style
-    if pending_style_ref[0]:
-        blocks.append(("embed", pending_style_ref[0]))
-        pending_style_ref[0] = None
-
-    # Plain rich text
-    blocks.append(("plain", el_html))
+        # Plain rich text element
+        el_html = str(element).strip()
+        if el_html:
+            blocks.append(("plain", el_html))
 
 
 def split_into_blocks(html_content):
     html_content = normalize_html(html_content)
     soup = BeautifulSoup(html_content, "html.parser")
 
-    # Unwrap generic containers (article, main, section, etc.)
+    # Unwrap outermost container (e.g. <article>)
     soup = unwrap_containers(soup)
 
     blocks = []
-    pending_style_ref = [None]  # mutable ref for nested function
-
-    for element in soup.children:
-        process_element(element, blocks, pending_style_ref)
-
-    if pending_style_ref[0]:
-        blocks.append(("embed", pending_style_ref[0]))
+    process_children(soup, blocks)
 
     return blocks
 
