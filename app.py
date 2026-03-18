@@ -1082,11 +1082,6 @@ else:
 if "blocks" in st.session_state:
     blocks_list = st.session_state["blocks"]
 
-    # Version counter for unique widget keys after deletions
-    if "block_version" not in st.session_state:
-        st.session_state["block_version"] = 0
-    ver = st.session_state["block_version"]
-
     # Rebuild stats from current blocks
     embed_count = sum(1 for b in blocks_list if b["type"] == "embed")
     plain_count = sum(1 for b in blocks_list if b["type"] == "plain")
@@ -1099,109 +1094,67 @@ if "blocks" in st.session_state:
     c3.metric("🟡 Embeds", embed_count)
     c4.metric("Total Size", f"{total_chars:,} ch")
 
-    # Tabs
-    tab_blocks, tab_source, tab_download = st.tabs(["📊 Block Analysis", "💻 Source HTML", "📥 Download"])
+    # ── Group blocks by H2 sections ──
+    sections = []
+    current_section = {"title": "📌 Introduction", "blocks": [], "indices": []}
 
-    with tab_blocks:
-        # Check if a pending delete was triggered
-        if st.session_state.get("pending_delete"):
-            indices_to_delete = st.session_state.pop("pending_delete")
-            for idx in sorted(indices_to_delete, reverse=True):
-                blocks_list.pop(idx)
-            st.session_state["blocks"] = blocks_list
-            st.session_state["block_version"] = ver + 1
-            st.rerun()
+    for idx, block in enumerate(blocks_list):
+        # Detect H2 headings to start new sections
+        soup_check = BeautifulSoup(block["html"], "html.parser")
+        h2 = soup_check.find("h2")
+        if h2 and block["type"] == "plain":
+            # Save previous section
+            if current_section["blocks"] or current_section["title"] == "📌 Introduction":
+                sections.append(current_section)
+            # Start new section
+            h2_text = h2.get_text()[:50].strip()
+            current_section = {"title": h2_text, "blocks": [], "indices": []}
 
-        # Select All / Deselect All controls
-        sel_col1, sel_col2, sel_col3 = st.columns([2, 2, 8])
+        current_section["blocks"].append(block)
+        current_section["indices"].append(idx)
 
-        def select_all_cb():
-            for i in range(len(st.session_state["blocks"])):
-                st.session_state[f"chk_v{ver}_{i}"] = True
+    # Append last section
+    if current_section["blocks"]:
+        sections.append(current_section)
 
-        def deselect_all_cb():
-            for i in range(len(st.session_state["blocks"])):
-                st.session_state[f"chk_v{ver}_{i}"] = False
+    # Create tabs for each section
+    section_tabs = st.tabs([s["title"] for s in sections])
 
-        with sel_col1:
-            st.button("☑️ Select All", key=f"select_all_v{ver}", use_container_width=True, on_click=select_all_cb)
-        with sel_col2:
-            st.button("⬜ Deselect All", key=f"deselect_all_v{ver}", use_container_width=True, on_click=deselect_all_cb)
+    for sec_idx, (section, sec_tab) in enumerate(zip(sections, section_tabs)):
+        with sec_tab:
+            st.caption(f"{len(section['blocks'])} blocks | {sum(b['chars'] for b in section['blocks']):,} chars")
 
-        # Block list with checkboxes
-        selected_indices = []
-        for idx, block in enumerate(blocks_list):
-            is_embed = block["type"] == "embed"
-            icon = "🟡" if is_embed else "🟢"
-            type_label = "EMBED" if is_embed else "PLAIN"
-            tag_info = "" if is_embed else f" <{block['tag']}>"
+            for i, (block, global_idx) in enumerate(zip(section["blocks"], section["indices"])):
+                is_embed = block["type"] == "embed"
+                icon = "🟡" if is_embed else "🟢"
+                type_label = "EMBED" if is_embed else "PLAIN"
+                tag_info = "" if is_embed else f" <{block['tag']}>"
+                preview = block["preview"][:60]
 
-            chk_col, block_col = st.columns([0.5, 11.5])
-
-            with chk_col:
-                checked = st.checkbox("", key=f"chk_v{ver}_{idx}", label_visibility="collapsed")
-                if checked:
-                    selected_indices.append(idx)
-
-            with block_col:
-                label = f"{icon} **Block {idx+1}** — {block.get('name', type_label)} ({block['chars']:,} chars)"
-                with st.expander(label):
+                with st.expander(f"{icon} **Block {global_idx+1}** — {type_label}{tag_info} ({block['chars']:,} ch) | {preview}"):
                     if is_embed:
                         inner_soup = BeautifulSoup(block["html"], "html.parser")
                         wrapper = inner_soup.find("div", attrs={"data-rt-embed-type": "true"})
                         inner_html = wrapper.decode_contents().strip() if wrapper else block["html"]
-                        edited = st.text_area(
-                            "HTML",
-                            value=inner_html,
-                            height=200,
-                            key=f"edit_v{ver}_{idx}",
-                            label_visibility="collapsed"
-                        )
-                        if edited != inner_html:
-                            new_html = f'<div data-rt-embed-type="true">\n{edited}\n</div>'
-                            blocks_list[idx]["html"] = new_html
-                            blocks_list[idx]["chars"] = len(new_html)
-                            blocks_list[idx]["preview"] = BeautifulSoup(edited, "html.parser").get_text()[:100].replace("\n", " ").strip()
-
+                        st.code(inner_html[:3000] + ("..." if len(inner_html) > 3000 else ""), language="html")
                         if block["chars"] > EMBED_CHAR_LIMIT:
-                            st.error(f"⚠️ Exceeds {EMBED_CHAR_LIMIT:,} char limit! ({block['chars']:,} chars)")
+                            st.error(f"⚠️ Exceeds {EMBED_CHAR_LIMIT:,} char limit!")
                     else:
-                        edited = st.text_area(
-                            "HTML",
-                            value=block["html"],
-                            height=100,
-                            key=f"edit_v{ver}_{idx}",
-                            label_visibility="collapsed"
-                        )
-                        if edited != block["html"]:
-                            blocks_list[idx]["html"] = edited
-                            blocks_list[idx]["chars"] = len(edited)
-                            blocks_list[idx]["preview"] = BeautifulSoup(edited, "html.parser").get_text()[:100].replace("\n", " ").strip()
-
-        # Delete selected button
-        if selected_indices:
-            st.warning(f"**{len(selected_indices)} block(s) selected**")
-
-            def do_delete():
-                st.session_state["pending_delete"] = selected_indices
-
-            st.button(
-                f"🗑️ Delete {len(selected_indices)} Selected Block(s)",
-                type="primary",
-                key=f"delete_v{ver}",
-                use_container_width=True,
-                on_click=do_delete
-            )
+                        st.markdown(block["html"], unsafe_allow_html=True)
+                        st.code(block["html"][:1000], language="html")
 
     # Rebuild processed HTML from blocks
     processed_html = "\n".join(b["html"] for b in blocks_list)
     st.session_state["processed_html"] = processed_html
 
-    with tab_source:
-        st.code(processed_html[:15000] + ("\n\n... [TRUNCATED]" if len(processed_html) > 15000 else ""),
-                language="html")
-
-    with tab_download:
+    # Source HTML & Download
+    st.divider()
+    dl_col1, dl_col2 = st.columns(2)
+    with dl_col1:
+        with st.expander("💻 Source HTML"):
+            st.code(processed_html[:15000] + ("\n\n... [TRUNCATED]" if len(processed_html) > 15000 else ""),
+                    language="html")
+    with dl_col2:
         st.download_button(
             "📥 Download Webflow-Ready HTML",
             data=processed_html,
