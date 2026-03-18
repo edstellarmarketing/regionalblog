@@ -658,6 +658,25 @@ def classify_and_wrap(html_content):
 
     processed_html = "\n".join(final_parts)
 
+    # Process external links: add rel='nofollow' and target='_blank' for non-edstellar links
+    link_soup = BeautifulSoup(processed_html, "html.parser")
+    for a_tag in link_soup.find_all("a", href=True):
+        href = a_tag.get("href", "")
+        # Skip internal links (edstellar.com, relative paths, mailto, #anchors)
+        if (href.startswith("/") or
+            href.startswith("#") or
+            href.startswith("mailto:") or
+            "edstellar.com" in href):
+            # Edstellar links: ensure target='_blank' but NO nofollow
+            if href.startswith("http") and "edstellar.com" in href:
+                a_tag["target"] = "_blank"
+            continue
+        # External links: add nofollow + new tab
+        if href.startswith("http"):
+            a_tag["target"] = "_blank"
+            a_tag["rel"] = "nofollow"
+    processed_html = str(link_soup)
+
     # Global: convert double quotes to single quotes on all embed blocks
     processed_html = convert_quotes_to_single(processed_html)
     # Restore the data-rt-embed-type wrapper to double quotes
