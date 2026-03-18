@@ -210,6 +210,48 @@ def get_headers(token):
     }
 
 
+def test_api_connection(token):
+    """Test API token by fetching authorized user info and collection details."""
+    results = {}
+
+    # 1. Test token — get authorized user
+    resp = requests.get(f"{WEBFLOW_API_BASE}/token/authorized_by",
+                        headers=get_headers(token))
+    if resp.status_code == 200:
+        user = resp.json()
+        results["auth"] = {"status": "✅ OK", "user": user}
+    else:
+        results["auth"] = {"status": f"❌ {resp.status_code}", "error": resp.text}
+        return results  # No point continuing
+
+    # 2. Test collection access — get collection info
+    resp = requests.get(f"{WEBFLOW_API_BASE}/collections/{COLLECTION_ID}",
+                        headers=get_headers(token))
+    if resp.status_code == 200:
+        col = resp.json()
+        results["collection"] = {
+            "status": "✅ OK",
+            "name": col.get("displayName", "?"),
+            "slug": col.get("slug", "?"),
+            "fields": len(col.get("fields", [])),
+        }
+    else:
+        results["collection"] = {"status": f"❌ {resp.status_code}", "error": resp.text}
+        return results
+
+    # 3. Test items read — get first page count
+    resp = requests.get(f"{WEBFLOW_API_BASE}/collections/{COLLECTION_ID}/items",
+                        headers=get_headers(token), params={"limit": 1})
+    if resp.status_code == 200:
+        data = resp.json()
+        total = data.get("pagination", {}).get("total", 0)
+        results["items"] = {"status": "✅ OK", "total_items": total}
+    else:
+        results["items"] = {"status": f"❌ {resp.status_code}", "error": resp.text}
+
+    return results
+
+
 def search_item_by_slug(token, slug):
     url = f"{WEBFLOW_API_BASE}/collections/{COLLECTION_ID}/items"
     headers = get_headers(token)
@@ -269,6 +311,41 @@ with st.sidebar:
 
     push_live = st.checkbox("Push to Live (not just Draft)", value=False,
                              help="If checked, updates go live immediately")
+
+    # API Test button
+    if api_token:
+        if st.button("🧪 Test API Connection", use_container_width=True):
+            with st.spinner("Testing..."):
+                results = test_api_connection(api_token)
+
+            # Auth
+            auth = results.get("auth", {})
+            if "user" in auth:
+                st.success(f"**Auth:** {auth['status']}")
+                user = auth["user"]
+                st.caption(f"User: {user.get('firstName', '')} {user.get('lastName', '')} ({user.get('email', '?')})")
+            else:
+                st.error(f"**Auth:** {auth['status']}")
+                st.code(auth.get("error", ""), language="json")
+
+            # Collection
+            col = results.get("collection", {})
+            if col:
+                if "name" in col:
+                    st.success(f"**Collection:** {col['status']} — {col['name']} ({col['fields']} fields)")
+                else:
+                    st.error(f"**Collection:** {col['status']}")
+                    st.code(col.get("error", ""), language="json")
+
+            # Items
+            items = results.get("items", {})
+            if items:
+                if "total_items" in items:
+                    st.success(f"**Items:** {items['status']} — {items['total_items']} blog posts")
+                else:
+                    st.error(f"**Items:** {items['status']}")
+    else:
+        st.caption("Enter token above, then test connection")
 
     st.divider()
     st.markdown("**Collection:** Blog Posts")
