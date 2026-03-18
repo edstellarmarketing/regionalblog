@@ -1,0 +1,409 @@
+import streamlit as st
+import requests
+import re
+from bs4 import BeautifulSoup, NavigableString, Tag
+import html as html_mod
+import json
+
+# ─── CONFIG ───────────────────────────────────────────────────────────────────
+COLLECTION_ID = "64ac3a242208dda62b6e6a90"
+WEBFLOW_API_BASE = "https://api.webflow.com/v2"
+EMBED_CHAR_LIMIT = 10000
+
+# CSS classes that indicate embed blocks
+EMBED_CLASSES = {
+    "takeaway",
+    "criteria", "crit-item", "crit-icon", "crit-header",
+    "table-scroll", "comp-table", "rank",
+    "co-card", "co-hdr", "co-logo", "meta-row", "chip",
+    "insight", "insight-icon", "ename", "author-del",
+    "nl-card", "nl-grid", "nl-stat", "nl-num", "nl-source", "nl-p",
+    "testimonial", "linkedin-topic", "div-flex", "testimonial-image",
+    "linked-in", "author-name", "name-flex", "author-pos",
+    "faq-item", "faq-question", "faq-answer", "toggle-icon",
+    "cta", "bg-green", "cta-btn",
+}
+
+PLAIN_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "li",
+              "a", "strong", "em", "b", "i", "blockquote", "figure",
+              "figcaption", "br", "hr", "img"}
+
+
+# ─── PREPROCESSING ────────────────────────────────────────────────────────────
+
+def unescape_if_needed(html_content):
+    if "&lt;div" in html_content or "&lt;table" in html_content or "&lt;style" in html_content:
+        return html_mod.unescape(html_content)
+    return html_content
+
+
+def normalize_html(html_content):
+    html_content = unescape_if_needed(html_content)
+    body_match = re.search(r'<body[^>]*>(.*?)</body>', html_content, re.DOTALL)
+    if body_match:
+        html_content = body_match.group(1)
+    return html_content.strip()
+
+
+# ─── BLOCK CLASSIFIER ────────────────────────────────────────────────────────
+
+def has_embed_class(tag):
+    classes = tag.get("class", [])
+    if isinstance(classes, str):
+        classes = classes.split()
+    return bool(set(classes) & EMBED_CLASSES)
+
+
+def is_embed_block(tag):
+    if not isinstance(tag, Tag):
+        return False
+    if tag.name == "style":
+        return True
+    if tag.name == "div" and tag.get("class"):
+        return True
+    if tag.name == "table" and tag.get("class"):
+        return True
+    if has_embed_class(tag):
+        return True
+    if tag.name == "div":
+        for desc in tag.descendants:
+            if isinstance(desc, Tag) and has_embed_class(desc):
+                return True
+    return False
+
+
+def split_into_blocks(html_content):
+    html_content = normalize_html(html_content)
+    soup = BeautifulSoup(html_content, "html.parser")
+
+    blocks = []
+    pending_style = None
+
+    for element in soup.children:
+        if isinstance(element, NavigableString):
+            text = str(element).strip()
+            if text and text not in ('\n', '\r\n'):
+                if '<div' in text or '<table' in text or '<style' in text:
+                    sub_soup = BeautifulSoup(text, "html.parser")
+                    for sub_el in sub_soup.children:
+                        if isinstance(sub_el, Tag):
+                            if is_embed_block(sub_el):
+                                blocks.append(("embed", str(sub_el)))
+                            else:
+                                blocks.append(("plain", str(sub_el)))
+                        elif isinstance(sub_el, NavigableString) and str(sub_el).strip():
+                            blocks.append(("plain", str(sub_el)))
+            continue
+
+        if not isinstance(element, Tag):
+            continue
+
+        el_html = str(element)
+
+        # <style> → merge with next embed
+        if element.name == "style":
+            pending_style = el_html
+            continue
+
+        # Top-level embed
+        if is_embed_block(element):
+            embed_html = el_html
+            if pending_style:
+                embed_html = pending_style + "\n" + embed_html
+                pending_style = None
+            blocks.append(("embed", embed_html))
+            continue
+
+        # <p> containing embed children (parser absorbed divs into p)
+        if element.name == "p":
+            has_inner_embeds = False
+            for child in element.children:
+                if isinstance(child, Tag) and is_embed_block(child):
+                    has_inner_embeds = True
+                    break
+
+            if has_inner_embeds:
+                current_plain = []
+                for child in element.children:
+                    if isinstance(child, Tag) and is_embed_block(child):
+                        if current_plain:
+                            plain_html = "".join(str(c) for c in current_plain).strip()
+                            if plain_html and plain_html not in ("<br/>", "<br>", ""):
+                                blocks.append(("plain", f"<p>{plain_html}</p>"))
+                            current_plain = []
+                        embed_html = str(child)
+                        if pending_style:
+                            embed_html = pending_style + "\n" + embed_html
+                            pending_style = None
+                        blocks.append(("embed", embed_html))
+                    else:
+                        current_plain.append(child)
+                if current_plain:
+                    plain_html = "".join(str(c) for c in current_plain).strip()
+                    if plain_html and plain_html not in ("<br/>", "<br>", ""):
+                        blocks.append(("plain", f"<p>{plain_html}</p>"))
+                continue
+
+        # Flush pending style
+        if pending_style:
+            blocks.append(("embed", pending_style))
+            pending_style = None
+
+        # Plain rich text
+        blocks.append(("plain", el_html))
+
+    if pending_style:
+        blocks.append(("embed", pending_style))
+
+    return blocks
+
+
+def classify_and_wrap(html_content):
+    blocks = split_into_blocks(html_content)
+
+    output_parts = []
+    embed_count = 0
+    plain_count = 0
+    warnings = []
+
+    for block_type, block_html in blocks:
+        if block_type == "embed":
+            if len(block_html) > EMBED_CHAR_LIMIT:
+                soup = BeautifulSoup(block_html, "html.parser")
+                first_tag = soup.find()
+                class_name = " ".join(first_tag.get("class", [])) if first_tag else "unknown"
+                warnings.append({
+                    "block": f"{first_tag.name if first_tag else '?'}.{class_name}",
+                    "chars": len(block_html),
+                    "preview": block_html[:150] + "..."
+                })
+
+            wrapped = f'<div data-rt-embed-type="html">\n{block_html}\n</div>'
+            output_parts.append(wrapped)
+            embed_count += 1
+        else:
+            stripped = block_html.strip()
+            if stripped and stripped not in ("<p></p>", "<p> </p>", "<br/>", "<br>"):
+                output_parts.append(stripped)
+                plain_count += 1
+
+    processed_html = "\n".join(output_parts)
+
+    stats = {
+        "total_blocks": embed_count + plain_count,
+        "embed_blocks": embed_count,
+        "plain_blocks": plain_count,
+        "warnings": warnings,
+        "total_chars": len(processed_html),
+    }
+
+    return processed_html, stats
+
+
+# ─── WEBFLOW API ──────────────────────────────────────────────────────────────
+
+def get_headers(token):
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "accept": "application/json",
+    }
+
+
+def search_item_by_slug(token, slug):
+    url = f"{WEBFLOW_API_BASE}/collections/{COLLECTION_ID}/items"
+    headers = get_headers(token)
+    offset = 0
+    limit = 100
+
+    while True:
+        resp = requests.get(url, headers=headers, params={"offset": offset, "limit": limit})
+        if resp.status_code != 200:
+            return None, f"API Error {resp.status_code}: {resp.text}"
+
+        data = resp.json()
+        for item in data.get("items", []):
+            if item.get("fieldData", {}).get("slug") == slug:
+                return item, None
+
+        total = data.get("pagination", {}).get("total", 0)
+        if offset + limit >= total:
+            break
+        offset += limit
+
+    return None, f"No item found with slug: '{slug}'"
+
+
+def update_item_content(token, item_id, content_html, live=False):
+    if live:
+        url = f"{WEBFLOW_API_BASE}/collections/{COLLECTION_ID}/items/live"
+    else:
+        url = f"{WEBFLOW_API_BASE}/collections/{COLLECTION_ID}/items"
+    headers = get_headers(token)
+
+    payload = {
+        "items": [{
+            "id": item_id,
+            "fieldData": {
+                "content": content_html
+            }
+        }]
+    }
+
+    resp = requests.patch(url, headers=headers, json=payload)
+    return resp
+
+
+# ─── STREAMLIT UI ─────────────────────────────────────────────────────────────
+
+st.set_page_config(page_title="Edstellar Blog → Webflow", page_icon="🚀", layout="wide")
+
+st.title("🚀 Edstellar Blog Content → Webflow CMS")
+st.caption("Upload HTML → Preview processed blocks → Push to Webflow content field")
+
+# Sidebar
+with st.sidebar:
+    st.header("⚙️ Settings")
+    api_token = st.text_input("Webflow API Token", type="password",
+                               help="Site API token with CMS edit+read scope")
+
+    push_live = st.checkbox("Push to Live (not just Draft)", value=False,
+                             help="If checked, updates go live immediately")
+
+    st.divider()
+    st.markdown("**Collection:** Blog Posts")
+    st.code(COLLECTION_ID, language=None)
+
+    st.divider()
+    st.markdown("""
+    **Workflow:**
+    1. Enter blog slug
+    2. Upload HTML file
+    3. Auto-processes into blocks
+    4. Preview & push
+
+    **Content types:**
+    - 🟢 Plain rich text → as-is
+    - 🟡 Embed → wrapped with `data-rt-embed-type`
+    """)
+
+# Slug input
+slug = st.text_input("🔗 Blog Post Slug",
+                      placeholder="corporate-training-companies-malaysia",
+                      help="Slug of the existing blog post to update")
+
+# Search
+if slug and api_token:
+    if st.button("🔍 Find Blog Post"):
+        with st.spinner("Searching..."):
+            item, error = search_item_by_slug(api_token, slug)
+        if error:
+            st.error(error)
+        else:
+            st.session_state["found_item"] = item
+            fd = item.get("fieldData", {})
+            st.success(f"✅ **{fd.get('name')}** — ID: `{item['id']}`")
+elif slug and not api_token:
+    st.info("Enter your API token in the sidebar to search.")
+
+st.divider()
+
+# Upload
+uploaded_file = st.file_uploader("📄 Upload Blog HTML", type=["html", "htm"])
+
+if uploaded_file:
+    raw_html = uploaded_file.read().decode("utf-8")
+    st.caption(f"Loaded **{uploaded_file.name}** — {len(raw_html):,} characters")
+
+    with st.spinner("Processing HTML..."):
+        processed_html, stats = classify_and_wrap(raw_html)
+        st.session_state["processed_html"] = processed_html
+        st.session_state["stats"] = stats
+
+if "stats" in st.session_state and "processed_html" in st.session_state:
+    stats = st.session_state["stats"]
+    processed_html = st.session_state["processed_html"]
+
+    # Stats
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Blocks", stats["total_blocks"])
+    c2.metric("🟢 Plain", stats["plain_blocks"])
+    c3.metric("🟡 Embeds", stats["embed_blocks"])
+    c4.metric("Total Size", f"{stats['total_chars']:,} ch")
+
+    if stats["warnings"]:
+        st.warning(f"⚠️ {len(stats['warnings'])} embed(s) exceed {EMBED_CHAR_LIMIT:,} char limit!")
+        for w in stats["warnings"]:
+            st.error(f"**{w['block']}** — {w['chars']:,} chars (limit: {EMBED_CHAR_LIMIT:,})")
+
+    # Tabs
+    tab_blocks, tab_source, tab_download = st.tabs(["📊 Block Analysis", "💻 Source HTML", "📥 Download"])
+
+    with tab_blocks:
+        block_soup = BeautifulSoup(processed_html, "html.parser")
+        idx = 0
+        for element in block_soup.children:
+            if isinstance(element, NavigableString):
+                continue
+            if not isinstance(element, Tag):
+                continue
+            idx += 1
+            is_embed = element.get("data-rt-embed-type") == "html"
+            char_count = len(str(element))
+            preview = element.get_text()[:100].replace("\n", " ").strip()
+
+            if is_embed:
+                inner = element.decode_contents().strip()
+                with st.expander(f"🟡 **Block {idx}** — EMBED ({char_count:,} chars) | {preview[:60]}..."):
+                    st.code(inner[:3000] + ("..." if len(inner) > 3000 else ""), language="html")
+                    if char_count > EMBED_CHAR_LIMIT:
+                        st.error(f"⚠️ Exceeds {EMBED_CHAR_LIMIT:,} char limit!")
+            else:
+                with st.expander(f"🟢 **Block {idx}** — PLAIN `<{element.name}>` ({char_count:,} chars) | {preview[:60]}"):
+                    st.markdown(str(element), unsafe_allow_html=True)
+                    st.code(str(element)[:1000], language="html")
+
+    with tab_source:
+        st.code(processed_html[:15000] + ("\n\n... [TRUNCATED]" if len(processed_html) > 15000 else ""),
+                language="html")
+
+    with tab_download:
+        st.download_button(
+            "📥 Download Webflow-Ready HTML",
+            data=processed_html,
+            file_name=f"webflow_ready_{slug or 'content'}.html",
+            mime="text/html",
+            use_container_width=True
+        )
+
+    # Push section
+    st.divider()
+    st.subheader("🚀 Push to Webflow CMS")
+
+    found_item = st.session_state.get("found_item")
+
+    if not api_token:
+        st.warning("Enter your Webflow API token in the sidebar.")
+    elif not found_item:
+        st.warning("Search for the blog post first using the slug above.")
+    else:
+        item_name = found_item["fieldData"].get("name", "?")
+        item_id = found_item["id"]
+        target = "**LIVE**" if push_live else "**Draft (staged)**"
+
+        st.info(f"Target: **{item_name}** → {target}\n\nItem ID: `{item_id}` | Content: {stats['total_chars']:,} chars")
+
+        confirm = st.checkbox(f"I confirm: update '{item_name}' content field")
+        if confirm:
+            if st.button("🚀 Push Content Now", type="primary", use_container_width=True):
+                with st.spinner("Pushing to Webflow..."):
+                    resp = update_item_content(api_token, item_id, processed_html, live=push_live)
+
+                if resp.status_code == 200:
+                    st.success("✅ Content updated successfully!")
+                    st.balloons()
+                    with st.expander("API Response"):
+                        st.json(resp.json())
+                else:
+                    st.error(f"❌ Failed — HTTP {resp.status_code}")
+                    st.code(resp.text, language="json")
