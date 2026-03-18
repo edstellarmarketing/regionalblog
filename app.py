@@ -496,28 +496,65 @@ st.divider()
 # ── Test Push Section ──
 with st.expander("🧪 Test Push (verify embed format)"):
     st.markdown("Push a sample embed block to a test blog post to verify `data-rt-embed-type` works correctly.")
+
+    # Debug: Show collection field slugs
+    if api_token:
+        if st.button("🔎 Show Collection Field Slugs", key="show_fields_btn"):
+            with st.spinner("Fetching collection schema..."):
+                resp = requests.get(f"{WEBFLOW_API_BASE}/collections/{COLLECTION_ID}",
+                                    headers=get_headers(api_token))
+            if resp.status_code == 200:
+                col_data = resp.json()
+                fields = col_data.get("fields", [])
+                st.markdown("**All fields in Blog Posts collection:**")
+                for f in fields:
+                    ftype = f.get("type", "?")
+                    slug = f.get("slug", "?")
+                    name = f.get("displayName", "?")
+                    marker = "👈 **THIS ONE**" if ftype == "RichText" else ""
+                    st.markdown(f"- `{slug}` → {name} ({ftype}) {marker}")
+
+                # Store the rich text field slug
+                rt_fields = [f["slug"] for f in fields if f.get("type") == "RichText"]
+                if rt_fields:
+                    st.session_state["content_field_slug"] = rt_fields[0]
+                    st.success(f"Rich text field slug: **`{rt_fields[0]}`**")
+                else:
+                    st.warning("No RichText field found!")
+            else:
+                st.error(f"Failed: {resp.status_code}")
+                st.code(resp.text)
+
+    st.divider()
+
     test_slug = st.text_input("Test blog post slug", value="test-2", key="test_slug",
                                help="Slug of the blog post to use for testing")
+
+    # Use discovered field slug or default
+    content_field = st.session_state.get("content_field_slug", "content")
+    st.caption(f"Using field slug: `{content_field}` (click 'Show Field Slugs' above to verify)")
 
     test_content_option = st.radio("Test content:", [
         "Embed only (takeaway block)",
         "Plain + Embed mix",
+        "Plain only (simple paragraph)",
     ], key="test_option", horizontal=True)
 
     if test_content_option == "Embed only (takeaway block)":
         test_html = '''<div data-rt-embed-type="html">
 <div class='takeaway'>  <p>💡 KEY TAKEAWAYS</p>  <ul>    <li>      Edstellar is the best corporate training company in New Zealand with 2,000+ corporate training courses in NZ and 5,000+ trainers across technical, leadership, and behavioural domains.    </li>    <li>      Lumify Work is New Zealand's largest corporate IT training provider and Microsoft NZ's most strategic Learning Partner, training 5,000+ students per year.    </li>    <li>      Skillset NZ stands out for its exclusively B2B model serving large and medium organisations for 30+ years, with verified clients including WorkSafe NZ.    </li>    <li>      Companies were evaluated on trainer quality, NZQA and regulatory alignment, SME and geographic reach beyond Auckland, and post-training support.    </li>  </ul></div>
 </div>'''
-    else:
+    elif test_content_option == "Plain + Embed mix":
         test_html = '''<h2>Test Heading — Plain Rich Text</h2>
 <p>This is a plain paragraph with <strong>bold text</strong> and a <a href="https://www.edstellar.com">link to Edstellar</a>. This should appear as normal rich text in Webflow.</p>
 <div data-rt-embed-type="html">
 <div class='takeaway'>  <p>💡 KEY TAKEAWAYS</p>  <ul>    <li>      Edstellar is the best corporate training company in New Zealand with 2,000+ corporate training courses.    </li>    <li>      This block should appear as a Code Embed in Webflow editor.    </li>  </ul></div>
 </div>
-<p>This is another plain paragraph after the embed. It should appear as normal rich text.</p>
-<div data-rt-embed-type="html">
-<div class='cta bg-green'> <h3 style='color:white;margin-top:0px'>Ready to Upskill Your Team?</h3> <p>Join 500+ organizations worldwide that trust Edstellar for corporate training.</p> <a href='https://www.edstellar.com/corporate-training-pricing' target='_blank' class='cta-btn' title='Schedule a Free Training Consultation'>Explore Pricing →</a></div>
-</div>'''
+<p>This is another plain paragraph after the embed. It should appear as normal rich text.</p>'''
+    else:
+        test_html = '''<h2>Test Heading</h2>
+<p>This is a simple test paragraph. If you can see this in the Webflow editor, the field slug is correct.</p>
+<p>Second paragraph with <strong>bold</strong> and <a href="https://www.edstellar.com">a link</a>.</p>'''
 
     st.code(test_html[:500] + ("..." if len(test_html) > 500 else ""), language="html")
     st.caption(f"Content size: {len(test_html):,} chars")
@@ -533,11 +570,25 @@ with st.expander("🧪 Test Push (verify embed format)"):
                 item_name = item["fieldData"].get("name", "?")
                 st.caption(f"Found: {item_name} (ID: {item_id})")
 
+                # Use the correct field slug
+                payload = {
+                    "items": [{
+                        "id": item_id,
+                        "fieldData": {
+                            content_field: test_html
+                        }
+                    }]
+                }
+
                 with st.spinner("Pushing..."):
-                    resp = update_item_content(api_token, item_id, test_html, live=False)
+                    resp = requests.patch(
+                        f"{WEBFLOW_API_BASE}/collections/{COLLECTION_ID}/items",
+                        headers=get_headers(api_token),
+                        json=payload
+                    )
 
                 if resp.status_code == 200:
-                    st.success(f"✅ Test content pushed to '{item_name}'! Check Webflow CMS editor.")
+                    st.success(f"✅ Test content pushed to '{item_name}' using field `{content_field}`!")
                     with st.expander("API Response"):
                         st.json(resp.json())
                 else:
