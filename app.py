@@ -304,6 +304,28 @@ CO_CARD_STYLE = '''<style>
   .author-del { font-size: 13px; color: #6b7280; margin-top: 4px; }
 </style>'''
 
+# CSS style block for criteria grid
+CRITERIA_STYLE = '''<style>
+  .criteria {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    gap: 1rem;
+    margin: 1.5rem 0 2rem;
+  }
+  .crit-item {
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 1.25rem;
+    text-align: center;
+  }
+  .crit-icon { font-size: 1.8rem; margin-bottom: 0.5rem; }
+  .crit-item p:first-of-type { font-weight: 700; font-size: 0.95rem; color: #1E40AF; margin-bottom: 0.4rem; }
+  .crit-item p:last-of-type { font-size: 0.82rem; color: #6B7280; line-height: 1.5; }
+  @media (max-width: 768px) { .criteria { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 480px) { .criteria { grid-template-columns: 1fr; } }
+</style>'''
+
 
 def convert_key_takeaways(soup_tag):
     """key-takeaways + <h3> → takeaway + <p>💡 KEY TAKEAWAYS</p>"""
@@ -564,6 +586,7 @@ def classify_and_wrap(html_content):
     plain_count = 0
     warnings = []
     style_injected = False
+    criteria_style_injected = False
     cta_count = 0  # Track CTAs to detect end CTA
 
     # First pass: count CTAs to identify the last one
@@ -593,6 +616,13 @@ def classify_and_wrap(html_content):
                     # This is a standalone details — collect it
                     # We'll handle FAQ collection below
                     pass
+
+            # ── Special: Inject criteria style before first criteria block ──
+            if ("eval-grid" in classes or "criteria" in classes) and not criteria_style_injected:
+                crit_style_wrapped = f'<div data-rt-embed-type="true">\n{CRITERIA_STYLE}\n</div>'
+                output_parts.append(crit_style_wrapped)
+                embed_count += 1
+                criteria_style_injected = True
 
             # ── Special: Inject style block before first co-card ──
             if ("company-profile" in classes or "co-card" in classes) and not style_injected:
@@ -972,81 +1002,67 @@ else:
 
 st.divider()
 
-# Upload
-uploaded_file = st.file_uploader("📄 Upload Blog HTML", type=["html", "htm"])
+# Upload - two options
+upload_type = st.radio("📤 Upload Type", ["HTML File (auto-converts)", "CSV (pre-formatted Webflow content)"], horizontal=True)
 
-if uploaded_file:
-    raw_html = uploaded_file.read().decode("utf-8")
-    st.caption(f"Loaded **{uploaded_file.name}** — {len(raw_html):,} characters")
+if upload_type == "HTML File (auto-converts)":
+    uploaded_file = st.file_uploader("📄 Upload Blog HTML", type=["html", "htm"])
 
-    with st.spinner("Processing HTML..."):
-        processed_html, stats = classify_and_wrap(raw_html)
+    if uploaded_file:
+        raw_html = uploaded_file.read().decode("utf-8")
+        st.caption(f"Loaded **{uploaded_file.name}** — {len(raw_html):,} characters")
 
-        # Parse into individual blocks for editing
-        block_soup = BeautifulSoup(processed_html, "html.parser")
+        with st.spinner("Processing HTML..."):
+            processed_html, stats = classify_and_wrap(raw_html)
+
+            # Parse into individual blocks for editing
+            block_soup = BeautifulSoup(processed_html, "html.parser")
+            blocks_list = []
+            for element in block_soup.children:
+                if isinstance(element, NavigableString):
+                    continue
+                if not isinstance(element, Tag):
+                    continue
+                is_embed = element.get("data-rt-embed-type") == "true"
+                blocks_list.append({
+                    "type": "embed" if is_embed else "plain",
+                    "html": str(element),
+                    "tag": element.name,
+                    "preview": element.get_text()[:100].replace("\n", " ").strip(),
+                    "chars": len(str(element)),
+                })
+
+            st.session_state["blocks"] = blocks_list
+            st.session_state["stats"] = stats
+
+else:
+    # CSV upload — pre-formatted Webflow content
+    uploaded_csv = st.file_uploader("📄 Upload Content CSV", type=["csv"])
+
+    if uploaded_csv:
+        import csv
+        import io
+        csv_text = uploaded_csv.read().decode("utf-8")
+        reader = csv.DictReader(io.StringIO(csv_text))
+        rows = list(reader)
+
+        # Concatenate all content rows
+        content_parts = [row.get("content", "").strip() for row in rows if row.get("content", "").strip()]
+        csv_content = "\n".join(content_parts)
+
+        st.caption(f"Loaded **{uploaded_csv.name}** — {len(rows)} blocks, {len(csv_content):,} characters")
+
+        # Parse into blocks for display
+        block_soup = BeautifulSoup(csv_content, "html.parser")
         blocks_list = []
-        company_num = 0
         for element in block_soup.children:
             if isinstance(element, NavigableString):
                 continue
             if not isinstance(element, Tag):
                 continue
             is_embed = element.get("data-rt-embed-type") == "true"
-
-            # Determine block name based on content
-            name = ""
-            if is_embed:
-                inner = element.find()
-                if inner:
-                    classes = set(inner.get("class", []))
-                    if "takeaway" in classes or "key-takeaways" in classes:
-                        name = "📌 Key Takeaways"
-                    elif "criteria" in classes or "eval-grid" in classes:
-                        name = "📊 Evaluation Criteria"
-                    elif "table-scroll" in classes or "table-wrap" in classes:
-                        name = "📋 Comparison Table"
-                    elif "copy-div" in classes:
-                        name = "🖼️ Infographic Copy"
-                    elif "infographic-placeholder" in classes:
-                        name = "🖼️ Infographic Placeholder"
-                    elif "co-card" in classes or "company-profile" in classes:
-                        company_num += 1
-                        # Try to get company name from h3
-                        h3 = inner.find("h3")
-                        co_name = h3.get_text()[:40] if h3 else f"Company {company_num}"
-                        name = f"🏢 {co_name}"
-                    elif "testimonial" in classes or "expert-quote" in classes:
-                        # Get author name
-                        author = inner.find("b") or inner.find(class_="ename") or inner.find(class_="attribution")
-                        author_name = author.get_text()[:30].strip() if author else "Expert"
-                        name = f"💬 Quote: {author_name}"
-                    elif "faq" in classes:
-                        name = "❓ FAQ Section"
-                    elif "cta" in classes or "cta-block" in classes:
-                        name = "🚀 CTA Block"
-                    elif "steps-list" in classes:
-                        name = "📝 How to Choose Steps"
-                    elif "related-reading" in classes:
-                        name = "📚 Related Reading"
-                    elif "author-block" in classes:
-                        name = "✍️ Author Attribution"
-                    elif inner.name == "details":
-                        q = inner.find("summary") or inner.find("p")
-                        q_text = q.get_text()[:40] if q else "FAQ"
-                        name = f"❓ FAQ: {q_text}"
-                    else:
-                        name = f"🟡 Embed ({', '.join(classes) or inner.name})"
-            else:
-                if element.name in ("h1", "h2", "h3"):
-                    name = f"📌 {element.get_text()[:50]}"
-                elif element.name == "p":
-                    name = f"📝 {element.get_text()[:50]}"
-                else:
-                    name = f"🟢 {element.name}"
-
             blocks_list.append({
                 "type": "embed" if is_embed else "plain",
-                "name": name,
                 "html": str(element),
                 "tag": element.name,
                 "preview": element.get_text()[:100].replace("\n", " ").strip(),
@@ -1054,7 +1070,14 @@ if uploaded_file:
             })
 
         st.session_state["blocks"] = blocks_list
-        st.session_state["stats"] = stats
+        st.session_state["processed_html"] = csv_content
+        st.session_state["stats"] = {
+            "total_blocks": len(blocks_list),
+            "embed_blocks": sum(1 for b in blocks_list if b["type"] == "embed"),
+            "plain_blocks": sum(1 for b in blocks_list if b["type"] == "plain"),
+            "warnings": [],
+            "total_chars": len(csv_content),
+        }
 
 if "blocks" in st.session_state:
     blocks_list = st.session_state["blocks"]
