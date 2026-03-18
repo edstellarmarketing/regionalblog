@@ -493,6 +493,61 @@ else:
 
 st.divider()
 
+# ── Test Push Section ──
+with st.expander("🧪 Test Push (verify embed format)"):
+    st.markdown("Push a sample embed block to a test blog post to verify `data-rt-embed-type` works correctly.")
+    test_slug = st.text_input("Test blog post slug", value="test-2", key="test_slug",
+                               help="Slug of the blog post to use for testing")
+
+    test_content_option = st.radio("Test content:", [
+        "Embed only (takeaway block)",
+        "Plain + Embed mix",
+    ], key="test_option", horizontal=True)
+
+    if test_content_option == "Embed only (takeaway block)":
+        test_html = '''<div data-rt-embed-type="html">
+<div class='takeaway'>  <p>💡 KEY TAKEAWAYS</p>  <ul>    <li>      Edstellar is the best corporate training company in New Zealand with 2,000+ corporate training courses in NZ and 5,000+ trainers across technical, leadership, and behavioural domains.    </li>    <li>      Lumify Work is New Zealand's largest corporate IT training provider and Microsoft NZ's most strategic Learning Partner, training 5,000+ students per year.    </li>    <li>      Skillset NZ stands out for its exclusively B2B model serving large and medium organisations for 30+ years, with verified clients including WorkSafe NZ.    </li>    <li>      Companies were evaluated on trainer quality, NZQA and regulatory alignment, SME and geographic reach beyond Auckland, and post-training support.    </li>  </ul></div>
+</div>'''
+    else:
+        test_html = '''<h2>Test Heading — Plain Rich Text</h2>
+<p>This is a plain paragraph with <strong>bold text</strong> and a <a href="https://www.edstellar.com">link to Edstellar</a>. This should appear as normal rich text in Webflow.</p>
+<div data-rt-embed-type="html">
+<div class='takeaway'>  <p>💡 KEY TAKEAWAYS</p>  <ul>    <li>      Edstellar is the best corporate training company in New Zealand with 2,000+ corporate training courses.    </li>    <li>      This block should appear as a Code Embed in Webflow editor.    </li>  </ul></div>
+</div>
+<p>This is another plain paragraph after the embed. It should appear as normal rich text.</p>
+<div data-rt-embed-type="html">
+<div class='cta bg-green'> <h3 style='color:white;margin-top:0px'>Ready to Upskill Your Team?</h3> <p>Join 500+ organizations worldwide that trust Edstellar for corporate training.</p> <a href='https://www.edstellar.com/corporate-training-pricing' target='_blank' class='cta-btn' title='Schedule a Free Training Consultation'>Explore Pricing →</a></div>
+</div>'''
+
+    st.code(test_html[:500] + ("..." if len(test_html) > 500 else ""), language="html")
+    st.caption(f"Content size: {len(test_html):,} chars")
+
+    if api_token and test_slug:
+        if st.button("🧪 Push Test Content", key="test_push_btn"):
+            with st.spinner(f"Finding '{test_slug}' and pushing test content..."):
+                item, error = search_item_by_slug(api_token, test_slug)
+            if error:
+                st.error(error)
+            else:
+                item_id = item["id"]
+                item_name = item["fieldData"].get("name", "?")
+                st.caption(f"Found: {item_name} (ID: {item_id})")
+
+                with st.spinner("Pushing..."):
+                    resp = update_item_content(api_token, item_id, test_html, live=False)
+
+                if resp.status_code == 200:
+                    st.success(f"✅ Test content pushed to '{item_name}'! Check Webflow CMS editor.")
+                    with st.expander("API Response"):
+                        st.json(resp.json())
+                else:
+                    st.error(f"❌ Failed — HTTP {resp.status_code}")
+                    st.code(resp.text, language="json")
+    elif not api_token:
+        st.warning("Enter API token in sidebar first.")
+
+st.divider()
+
 # Upload
 uploaded_file = st.file_uploader("📄 Upload Blog HTML", type=["html", "htm"])
 
