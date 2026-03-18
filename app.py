@@ -276,39 +276,254 @@ def split_into_blocks(html_content):
 
 # ─── CONVERSION LAYER ─────────────────────────────────────────────────────────
 # Transforms HTML file format → Webflow template format before wrapping.
-# Each function handles one section type.
 
-def convert_key_takeaways(html_str):
-    """
-    Input:  <div class="key-takeaways"><h3>Key Takeaways</h3><ul><li>...</li></ul></div>
-    Output: <div class="takeaway"><p>💡 KEY TAKEAWAYS</p><ul><li>...</li></ul></div>
-    """
-    soup = BeautifulSoup(html_str, "html.parser")
-    div = soup.find("div", class_="key-takeaways")
-    if not div:
-        return html_str  # no match, return as-is
+# CSS style block for co-card and related components (injected once)
+CO_CARD_STYLE = '''<style>
+  .co-card {
+    background-color: #fff;
+    border: 1px solid #e2e2dd;
+    transition: box-shadow .3s;
+    border-radius: 8px;
+    padding: 30px;
+    margin: 14px 0;
+  }
+  .co-card:hover { box-shadow: 0 8px 30px rgba(0,0,0,.06); }
+  .co-hdr { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 16px; }
+  .co-hdr h3, .co-hdr p { margin: 0; }
+  .co-logo { border-radius: 8px; padding: 4px 10px; border: 1px solid #264cbe; display: flex; align-items: center; justify-content: center; height:70px; }
+  .co-logo img { width: 150px; height: 100%; object-fit: contain; }
+  .meta-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+  .chip { font-size: 12px; padding: 4px 10px; border-radius: 5px; background: #f3f4f6; color: #1a1a2e; font-weight: 500; }
+  .co-card p { margin-top: 0px; }
+  .co-card p a { text-decoration: none; }
+  .co-card ul { padding-left: 20px; margin-bottom: 12px; margin-top: 10px; }
+  .co-card li { margin-bottom: 4px; }
+  .insight { display: flex; gap: 16px; background: linear-gradient(135deg, #fefce8, #fef9c3); border: 1px solid #fde68a; border-radius: 10px; padding: 24px; margin: 16px 0; }
+  .insight-icon { width: 40px; height: 40px; border-radius: 50%; background: #fef3c7; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
+  .ename { font-weight: 600; font-size: 14px; margin-top: 8px; }
+  .author-del { font-size: 13px; color: #6b7280; margin-top: 4px; }
+</style>'''
 
-    # Change class
-    div["class"] = ["takeaway"]
 
-    # Replace <h3> with <p>💡 KEY TAKEAWAYS</p>
-    h3 = div.find("h3")
+def convert_key_takeaways(soup_tag):
+    """key-takeaways + <h3> → takeaway + <p>💡 KEY TAKEAWAYS</p>"""
+    soup_tag["class"] = ["takeaway"]
+    h3 = soup_tag.find("h3")
     if h3:
-        new_p = soup.new_tag("p")
-        new_p.string = "💡 KEY TAKEAWAYS"
-        h3.replace_with(new_p)
+        h3.name = "p"
+        h3.string = "💡 KEY TAKEAWAYS"
+    return str(soup_tag)
 
-    return str(div)
+
+def convert_eval_grid(soup_tag):
+    """eval-grid/eval-card/icon/factor/desc → criteria/crit-item/crit-icon + <p> pairs"""
+    soup_tag["class"] = ["criteria"]
+    for card in soup_tag.find_all("div", class_="eval-card"):
+        card["class"] = ["crit-item"]
+        icon_div = card.find("div", class_="icon")
+        if icon_div:
+            icon_div["class"] = ["crit-icon"]
+        # factor → first <p> (replace div with p)
+        factor = card.find("div", class_="factor")
+        if factor:
+            factor.name = "p"
+            del factor["class"]
+        # desc → second <p> (replace div with p)
+        desc = card.find("div", class_="desc")
+        if desc:
+            desc.name = "p"
+            del desc["class"]
+    return str(soup_tag)
+
+
+def convert_table_wrap(soup_tag):
+    """table-wrap → table-scroll, add comp-table class, add rank spans"""
+    soup_tag["class"] = ["table-scroll"]
+    table = soup_tag.find("table")
+    if table:
+        table["class"] = ["comp-table"]
+        # Add <span class="rank"> around first <td> content in each row
+        for row in table.find_all("tr"):
+            tds = row.find_all("td")
+            if tds and tds[0].string and tds[0].string.strip().isdigit():
+                num = tds[0].string.strip()
+                tds[0].clear()
+                span = BeautifulSoup(f'<span class="rank">{num}</span>', "html.parser")
+                tds[0].append(span)
+    return str(soup_tag)
+
+
+def convert_company_profile(soup_tag):
+    """company-profile → co-card with co-hdr, co-logo, meta-row, chip structure"""
+    # Change main class
+    classes = soup_tag.get("class", [])
+    new_classes = ["co-card"]
+    if "featured" in classes:
+        new_classes.append("featured")  # preserve featured flag if present
+    soup_tag["class"] = new_classes
+
+    # Find and restructure the header: h3 + tagline → co-hdr with co-logo
+    h3 = soup_tag.find("h3")
+    tagline = soup_tag.find("p", class_="tagline")
+
+    if h3:
+        # Build co-hdr structure
+        co_hdr_html = '<div class="co-hdr"><div class="co-logo"></div><div>'
+        co_hdr_html += str(h3)
+        if tagline:
+            # Remove tagline class
+            tagline_copy = str(tagline).replace(' class="tagline"', '')
+            co_hdr_html += tagline_copy
+        co_hdr_html += '</div></div>'
+
+        # Insert co-hdr before h3
+        co_hdr = BeautifulSoup(co_hdr_html, "html.parser")
+        h3.insert_before(co_hdr)
+        h3.decompose()
+        if tagline:
+            tagline.decompose()
+
+    # meta-badges → meta-row, badge → chip
+    meta = soup_tag.find("div", class_="meta-badges")
+    if meta:
+        meta["class"] = ["meta-row"]
+        for badge in meta.find_all("span", class_="badge"):
+            badge["class"] = ["chip"]
+
+    # offerings-title div → <b>Key Offerings:</b>
+    off_title = soup_tag.find("div", class_="offerings-title")
+    if off_title:
+        off_title.replace_with(BeautifulSoup("<b>Key Offerings:</b>", "html.parser"))
+
+    # highlights-title div → <b>Highlights:</b>
+    hi_title = soup_tag.find("div", class_="highlights-title")
+    if hi_title:
+        hi_title.replace_with(BeautifulSoup("<b>Highlights:</b>", "html.parser"))
+
+    # company-location div → <p><b>Location:</b> text</p>
+    loc = soup_tag.find("div", class_="company-location")
+    if loc:
+        loc.name = "p"
+        del loc["class"]
+
+    # expert-quote inside card → insight block (simplified — keep as-is if present)
+    # The insight block structure in the Webflow format is already inside co-card
+
+    return str(soup_tag)
+
+
+def convert_expert_quote_to_testimonial(soup_tag):
+    """
+    expert-quote (simple blockquote + attribution) → testimonial layout.
+    Note: The input has placeholder data; the real testimonial data comes from
+    the content writers. We convert the structure but keep the content.
+    """
+    soup_tag["class"] = ["testimonial"]
+
+    # blockquote → plain <p>
+    bq = soup_tag.find("blockquote")
+    if bq:
+        bq.name = "p"
+
+    # attribution div → simplified author section
+    attr = soup_tag.find("div", class_="attribution")
+    if attr:
+        attr["class"] = ["div-flex"]
+        # The attribution has <strong>Name</strong><br/>Title<br/>Credentials
+        # Convert to the author-name structure
+        strong = attr.find("strong")
+        name = strong.string if strong else ""
+        # Get remaining text
+        text_parts = [s.strip() for s in attr.stripped_strings if s.strip() != name]
+
+        new_html = f'<div class="author-name"><div class="name-flex"><b>{name}</b></div>'
+        if len(text_parts) >= 1:
+            new_html += f'<p class="author-pos">{text_parts[0]}</p>'
+        if len(text_parts) >= 2:
+            new_html += f'<p class="author-del">{text_parts[1]}</p>'
+        new_html += '</div>'
+
+        attr.clear()
+        attr.append(BeautifulSoup(new_html, "html.parser"))
+
+    return str(soup_tag)
+
+
+def convert_steps_to_paragraphs(soup_tag):
+    """
+    steps-list with step-items (h4 + p) → plain <p> paragraphs with bold lead.
+    Returns a LIST of plain blocks, not a single embed.
+    """
+    paragraphs = []
+    for step in soup_tag.find_all("div", class_="step-item"):
+        h4 = step.find("h4")
+        p = step.find("p")
+        if h4 and p:
+            # Combine: <p><strong>Step title.</strong> Step content...</p>
+            step_html = f"<p><strong>{h4.get_text()}</strong> {p.decode_contents()}</p>"
+            paragraphs.append(step_html)
+    return paragraphs
+
+
+def convert_faq_details(details_list):
+    """
+    <details><summary>Q</summary><div class="faq-answer"><p>A</p></div></details>
+    → <section class="faq" itemscope itemtype="https://schema.org/FAQPage">
+        <div class="faq-item"><div class="faq-question"><p>Q</p><span class="toggle-icon"></span></div>
+        <div class="faq-answer"><p>A</p></div></div>
+    """
+    faq_html = '<section class="faq" itemscope="" itemtype="https://schema.org/FAQPage">\n'
+
+    for i, detail in enumerate(details_list):
+        summary = detail.find("summary")
+        answer_div = detail.find("div", class_="faq-answer")
+
+        q_text = summary.get_text() if summary else ""
+        a_html = answer_div.decode_contents() if answer_div else ""
+
+        active = ' active' if i == 0 else ''
+        faq_html += f'''<div class="faq-item{active}" itemscope="" itemprop="mainEntity" itemtype="https://schema.org/Question">
+<div class="faq-question" data-index="{i}">
+<p itemprop="name">{q_text}</p>
+<span class="toggle-icon"></span>
+</div>
+<div class="faq-answer" id="answer-{i}" itemprop="acceptedAnswer" itemscope="" itemtype="https://schema.org/Answer">
+{a_html}
+</div>
+</div>\n'''
+
+    faq_html += '</section>'
+    return faq_html
+
+
+def convert_cta_block(soup_tag, is_end_cta=False):
+    """aside.cta-block → div.cta (mid) or div.cta.bg-green (end)"""
+    new_div = BeautifulSoup(str(soup_tag), "html.parser").find()
+    new_div.name = "div"
+
+    if is_end_cta:
+        new_div["class"] = ["cta", "bg-green"]
+    else:
+        new_div["class"] = ["cta"]
+
+    # Add style to h3
+    h3 = new_div.find("h3")
+    if h3:
+        h3["style"] = "color:white;margin-top:0px"
+
+    return str(new_div)
+
+
+def convert_quotes_to_single(html_str):
+    """Convert all double-quoted attributes to single quotes for Webflow."""
+    result = re.sub(r'(\w+)="([^"]*)"', r"\1='\2'", html_str)
+    return result
 
 
 def convert_block(block_type, block_html):
-    """
-    Apply the appropriate conversion based on the block's content.
-    Returns converted HTML string.
-    """
+    """Apply the appropriate conversion based on the block's content."""
     soup = BeautifulSoup(block_html, "html.parser")
     first_tag = soup.find()
-
     if not first_tag:
         return block_html
 
@@ -316,10 +531,27 @@ def convert_block(block_type, block_html):
 
     # Key Takeaways
     if "key-takeaways" in classes:
-        return convert_key_takeaways(block_html)
+        return convert_key_takeaways(first_tag)
 
-    # More converters will be added here section by section
-    # e.g. eval-grid → criteria, company-profile → co-card, etc.
+    # Eval Grid → Criteria
+    if "eval-grid" in classes:
+        return convert_eval_grid(first_tag)
+
+    # Table Wrap → Table Scroll
+    if "table-wrap" in classes:
+        return convert_table_wrap(first_tag)
+
+    # Company Profile → Co-Card
+    if "company-profile" in classes:
+        return convert_company_profile(first_tag)
+
+    # Expert Quote → Testimonial
+    if "expert-quote" in classes:
+        return convert_expert_quote_to_testimonial(first_tag)
+
+    # CTA Block (aside)
+    if "cta-block" in classes:
+        return convert_cta_block(first_tag, is_end_cta=False)
 
     return block_html
 
@@ -331,18 +563,57 @@ def classify_and_wrap(html_content):
     embed_count = 0
     plain_count = 0
     warnings = []
+    style_injected = False
+    cta_count = 0  # Track CTAs to detect end CTA
+
+    # First pass: count CTAs to identify the last one
+    total_ctas = sum(1 for bt, bh in blocks
+                     if bt == "embed" and ("cta-block" in str(bh)[:200] or
+                                            "cta" in str(BeautifulSoup(bh, "html.parser").find().get("class", [])) if BeautifulSoup(bh, "html.parser").find() else False))
 
     for block_type, block_html in blocks:
         if block_type == "embed":
-            # Apply conversion (HTML file format → Webflow format)
+            soup = BeautifulSoup(block_html, "html.parser")
+            first_tag = soup.find()
+            classes = set(first_tag.get("class", [])) if first_tag else set()
+
+            # ── Special: steps-list → convert to plain paragraphs ──
+            if "steps-list" in classes:
+                paragraphs = convert_steps_to_paragraphs(first_tag)
+                for p in paragraphs:
+                    output_parts.append(p)
+                    plain_count += 1
+                continue
+
+            # ── Special: FAQ details → convert to faq section ──
+            if first_tag and first_tag.name == "details":
+                # Collect all consecutive details blocks
+                # (they come one by one from the parser)
+                if not any("section" in p and "faq" in p for p in output_parts[-1:]):
+                    # This is a standalone details — collect it
+                    # We'll handle FAQ collection below
+                    pass
+
+            # ── Special: Inject style block before first co-card ──
+            if ("company-profile" in classes or "co-card" in classes) and not style_injected:
+                style_wrapped = f'<div data-rt-embed-type="true">\n{CO_CARD_STYLE}\n</div>'
+                output_parts.append(style_wrapped)
+                embed_count += 1
+                style_injected = True
+
+            # ── Special: CTA detection (mid vs end) ──
+            if "cta-block" in classes:
+                cta_count += 1
+
+            # Apply structural conversion
             block_html = convert_block(block_type, block_html)
 
             if len(block_html) > EMBED_CHAR_LIMIT:
-                soup = BeautifulSoup(block_html, "html.parser")
-                first_tag = soup.find()
-                class_name = " ".join(first_tag.get("class", [])) if first_tag else "unknown"
+                soup2 = BeautifulSoup(block_html, "html.parser")
+                ft = soup2.find()
+                cn = " ".join(ft.get("class", [])) if ft else "unknown"
                 warnings.append({
-                    "block": f"{first_tag.name if first_tag else '?'}.{class_name}",
+                    "block": f"{ft.name if ft else '?'}.{cn}",
                     "chars": len(block_html),
                     "preview": block_html[:150] + "..."
                 })
@@ -356,7 +627,52 @@ def classify_and_wrap(html_content):
                 output_parts.append(stripped)
                 plain_count += 1
 
-    processed_html = "\n".join(output_parts)
+    # ── Post-processing: collect consecutive <details> into one FAQ section ──
+    final_parts = []
+    details_buffer = []
+    for part in output_parts:
+        # Check if this is a wrapped details block
+        if 'data-rt-embed-type="true"' in part and "<details" in part:
+            # Extract the details tag
+            s = BeautifulSoup(part, "html.parser")
+            wrapper = s.find("div", attrs={"data-rt-embed-type": True})
+            detail = wrapper.find("details") if wrapper else None
+            if detail:
+                details_buffer.append(detail)
+                continue
+        else:
+            # Flush any buffered details as FAQ
+            if details_buffer:
+                faq_html = convert_faq_details(details_buffer)
+                faq_wrapped = f'<div data-rt-embed-type="true">\n{faq_html}\n</div>'
+                final_parts.append(faq_wrapped)
+                details_buffer = []
+
+        final_parts.append(part)
+
+    # Flush remaining details
+    if details_buffer:
+        faq_html = convert_faq_details(details_buffer)
+        faq_wrapped = f'<div data-rt-embed-type="true">\n{faq_html}\n</div>'
+        final_parts.append(faq_wrapped)
+
+    processed_html = "\n".join(final_parts)
+
+    # Global: convert double quotes to single quotes on all embed blocks
+    processed_html = convert_quotes_to_single(processed_html)
+    # Restore the data-rt-embed-type wrapper to double quotes
+    processed_html = processed_html.replace("data-rt-embed-type='true'", 'data-rt-embed-type="true"')
+
+    # Recalculate counts after FAQ merging
+    final_soup = BeautifulSoup(processed_html, "html.parser")
+    embed_count = 0
+    plain_count = 0
+    for el in final_soup.children:
+        if isinstance(el, Tag):
+            if el.get("data-rt-embed-type"):
+                embed_count += 1
+            else:
+                plain_count += 1
 
     stats = {
         "total_blocks": embed_count + plain_count,
