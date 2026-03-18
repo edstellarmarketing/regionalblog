@@ -686,21 +686,35 @@ if "blocks" in st.session_state:
     tab_blocks, tab_source, tab_download = st.tabs(["📊 Block Analysis", "💻 Source HTML", "📥 Download"])
 
     with tab_blocks:
-        blocks_to_delete = []
+        # Select All / Deselect All controls
+        sel_col1, sel_col2, sel_col3 = st.columns([2, 2, 8])
+        with sel_col1:
+            if st.button("☑️ Select All", key="select_all", use_container_width=True):
+                for i in range(len(blocks_list)):
+                    st.session_state[f"chk_{i}"] = True
+                st.rerun()
+        with sel_col2:
+            if st.button("⬜ Deselect All", key="deselect_all", use_container_width=True):
+                for i in range(len(blocks_list)):
+                    st.session_state[f"chk_{i}"] = False
+                st.rerun()
 
+        # Block list with checkboxes
+        selected_indices = []
         for idx, block in enumerate(blocks_list):
             is_embed = block["type"] == "embed"
             icon = "🟡" if is_embed else "🟢"
             type_label = "EMBED" if is_embed else "PLAIN"
             tag_info = "" if is_embed else f" <{block['tag']}>"
 
-            # Row: delete button + block label (outside expander)
-            row_col1, row_col2 = st.columns([12, 1])
-            with row_col2:
-                if st.button("🗑️", key=f"del_{idx}", help=f"Delete block {idx+1}"):
-                    blocks_to_delete.append(idx)
+            chk_col, block_col = st.columns([0.5, 11.5])
 
-            with row_col1:
+            with chk_col:
+                checked = st.checkbox("", key=f"chk_{idx}", label_visibility="collapsed")
+                if checked:
+                    selected_indices.append(idx)
+
+            with block_col:
                 with st.expander(f"{icon} **Block {idx+1}** — {type_label}{tag_info} ({block['chars']:,} chars) | {block['preview'][:60]}"):
                     if is_embed:
                         inner_soup = BeautifulSoup(block["html"], "html.parser")
@@ -734,12 +748,18 @@ if "blocks" in st.session_state:
                             blocks_list[idx]["chars"] = len(edited)
                             blocks_list[idx]["preview"] = BeautifulSoup(edited, "html.parser").get_text()[:100].replace("\n", " ").strip()
 
-        # Process deletions
-        if blocks_to_delete:
-            for idx in sorted(blocks_to_delete, reverse=True):
-                blocks_list.pop(idx)
-            st.session_state["blocks"] = blocks_list
-            st.rerun()
+        # Delete selected button
+        if selected_indices:
+            st.warning(f"**{len(selected_indices)} block(s) selected**")
+            if st.button(f"🗑️ Delete {len(selected_indices)} Selected Block(s)", type="primary", use_container_width=True):
+                for idx in sorted(selected_indices, reverse=True):
+                    blocks_list.pop(idx)
+                # Clear checkboxes
+                for i in range(len(blocks_list) + len(selected_indices)):
+                    if f"chk_{i}" in st.session_state:
+                        del st.session_state[f"chk_{i}"]
+                st.session_state["blocks"] = blocks_list
+                st.rerun()
 
     # Rebuild processed HTML from blocks
     processed_html = "\n".join(b["html"] for b in blocks_list)
