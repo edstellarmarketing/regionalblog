@@ -670,6 +670,11 @@ if uploaded_file:
 if "blocks" in st.session_state:
     blocks_list = st.session_state["blocks"]
 
+    # Version counter for unique widget keys after deletions
+    if "block_version" not in st.session_state:
+        st.session_state["block_version"] = 0
+    ver = st.session_state["block_version"]
+
     # Rebuild stats from current blocks
     embed_count = sum(1 for b in blocks_list if b["type"] == "embed")
     plain_count = sum(1 for b in blocks_list if b["type"] == "plain")
@@ -689,14 +694,14 @@ if "blocks" in st.session_state:
         # Select All / Deselect All controls
         sel_col1, sel_col2, sel_col3 = st.columns([2, 2, 8])
         with sel_col1:
-            if st.button("☑️ Select All", key="select_all", use_container_width=True):
+            if st.button("☑️ Select All", key=f"select_all_v{ver}", use_container_width=True):
                 for i in range(len(blocks_list)):
-                    st.session_state[f"chk_{i}"] = True
+                    st.session_state[f"chk_v{ver}_{i}"] = True
                 st.rerun()
         with sel_col2:
-            if st.button("⬜ Deselect All", key="deselect_all", use_container_width=True):
+            if st.button("⬜ Deselect All", key=f"deselect_all_v{ver}", use_container_width=True):
                 for i in range(len(blocks_list)):
-                    st.session_state[f"chk_{i}"] = False
+                    st.session_state[f"chk_v{ver}_{i}"] = False
                 st.rerun()
 
         # Block list with checkboxes
@@ -710,7 +715,7 @@ if "blocks" in st.session_state:
             chk_col, block_col = st.columns([0.5, 11.5])
 
             with chk_col:
-                checked = st.checkbox("", key=f"chk_{idx}", label_visibility="collapsed")
+                checked = st.checkbox("", key=f"chk_v{ver}_{idx}", label_visibility="collapsed")
                 if checked:
                     selected_indices.append(idx)
 
@@ -724,7 +729,7 @@ if "blocks" in st.session_state:
                             "HTML",
                             value=inner_html,
                             height=200,
-                            key=f"edit_{idx}",
+                            key=f"edit_v{ver}_{idx}",
                             label_visibility="collapsed"
                         )
                         if edited != inner_html:
@@ -740,7 +745,7 @@ if "blocks" in st.session_state:
                             "HTML",
                             value=block["html"],
                             height=100,
-                            key=f"edit_{idx}",
+                            key=f"edit_v{ver}_{idx}",
                             label_visibility="collapsed"
                         )
                         if edited != block["html"]:
@@ -751,14 +756,11 @@ if "blocks" in st.session_state:
         # Delete selected button
         if selected_indices:
             st.warning(f"**{len(selected_indices)} block(s) selected**")
-            if st.button(f"🗑️ Delete {len(selected_indices)} Selected Block(s)", type="primary", use_container_width=True):
+            if st.button(f"🗑️ Delete {len(selected_indices)} Selected Block(s)", type="primary", key=f"delete_v{ver}", use_container_width=True):
                 for idx in sorted(selected_indices, reverse=True):
                     blocks_list.pop(idx)
-                # Clear checkboxes
-                for i in range(len(blocks_list) + len(selected_indices)):
-                    if f"chk_{i}" in st.session_state:
-                        del st.session_state[f"chk_{i}"]
                 st.session_state["blocks"] = blocks_list
+                st.session_state["block_version"] = ver + 1  # bump version → fresh keys
                 st.rerun()
 
     # Rebuild processed HTML from blocks
