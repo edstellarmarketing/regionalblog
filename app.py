@@ -217,6 +217,10 @@ def process_children(parent, blocks):
         if element.name == "script":
             continue
 
+        # <h1> → skip (handled by the Name field, not content)
+        if element.name == "h1":
+            continue
+
         # Is this an embed block?
         if is_embed_block(element):
             blocks.append(("embed", str(element)))
@@ -542,6 +546,17 @@ if mode == "Update Existing Blog":
     elif slug and not api_token:
         st.info("Enter your API token in the sidebar to search.")
 
+    # Show editable meta fields if item found
+    found_item = st.session_state.get("found_item")
+    if found_item:
+        fd = found_item.get("fieldData", {})
+        with st.expander("✏️ Edit Meta Fields (pre-filled from existing blog)", expanded=True):
+            edit_name = st.text_input("Name (H1)", value=fd.get("name", ""), key="edit_name")
+            edit_slug = st.text_input("Slug", value=fd.get("slug", ""), key="edit_slug")
+            edit_meta_title = st.text_input("Meta Title", value=fd.get("meta-title", ""), key="edit_meta_title")
+            edit_meta_desc = st.text_area("Meta Description", value=fd.get("meta-description", ""), key="edit_meta_desc", max_chars=300)
+            edit_canonical = st.text_input("Canonical Links", value=fd.get("canonical-links", ""), key="edit_canonical")
+
 else:
     # Create new mode
     new_name = st.text_input("📝 Blog Post Title (Name)*",
@@ -566,112 +581,6 @@ else:
         new_faqs_section = st.checkbox("FAQS Section", value=True)
 
     slug = new_slug  # for file naming
-
-st.divider()
-
-# ── Test Push Section ──
-with st.expander("🧪 Test Push (verify embed format)"):
-    st.markdown("Push a sample embed block to a test blog post to verify `data-rt-embed-type` works correctly.")
-
-    # Debug: Show collection field slugs
-    if api_token:
-        if st.button("🔎 Show Collection Field Slugs", key="show_fields_btn"):
-            with st.spinner("Fetching collection schema..."):
-                resp = requests.get(f"{WEBFLOW_API_BASE}/collections/{COLLECTION_ID}",
-                                    headers=get_headers(api_token))
-            if resp.status_code == 200:
-                col_data = resp.json()
-                fields = col_data.get("fields", [])
-                st.markdown("**All fields in Blog Posts collection:**")
-                for f in fields:
-                    ftype = f.get("type", "?")
-                    slug = f.get("slug", "?")
-                    name = f.get("displayName", "?")
-                    marker = "👈 **THIS ONE**" if ftype == "RichText" else ""
-                    st.markdown(f"- `{slug}` → {name} ({ftype}) {marker}")
-
-                # Store the rich text field slug
-                rt_fields = [f["slug"] for f in fields if f.get("type") == "RichText"]
-                if rt_fields:
-                    st.session_state["content_field_slug"] = rt_fields[0]
-                    st.success(f"Rich text field slug: **`{rt_fields[0]}`**")
-                else:
-                    st.warning("No RichText field found!")
-            else:
-                st.error(f"Failed: {resp.status_code}")
-                st.code(resp.text)
-
-    st.divider()
-
-    test_slug = st.text_input("Test blog post slug", value="test-2", key="test_slug",
-                               help="Slug of the blog post to use for testing")
-
-    # Use discovered field slug or default
-    content_field = st.session_state.get("content_field_slug", "content")
-    st.caption(f"Using field slug: `{content_field}` (click 'Show Field Slugs' above to verify)")
-
-    test_content_option = st.radio("Test content:", [
-        "Embed only (takeaway block)",
-        "Plain + Embed mix",
-        "Plain only (simple paragraph)",
-    ], key="test_option", horizontal=True)
-
-    if test_content_option == "Embed only (takeaway block)":
-        test_html = '''<div data-rt-embed-type="true">
-<div class='takeaway'>  <p>💡 KEY TAKEAWAYS</p>  <ul>    <li>      Edstellar is the best corporate training company in New Zealand with 2,000+ corporate training courses in NZ and 5,000+ trainers across technical, leadership, and behavioural domains.    </li>    <li>      Lumify Work is New Zealand's largest corporate IT training provider and Microsoft NZ's most strategic Learning Partner, training 5,000+ students per year.    </li>    <li>      Skillset NZ stands out for its exclusively B2B model serving large and medium organisations for 30+ years, with verified clients including WorkSafe NZ.    </li>    <li>      Companies were evaluated on trainer quality, NZQA and regulatory alignment, SME and geographic reach beyond Auckland, and post-training support.    </li>  </ul></div>
-</div>'''
-    elif test_content_option == "Plain + Embed mix":
-        test_html = '''<h2>Test Heading — Plain Rich Text</h2>
-<p>This is a plain paragraph with <strong>bold text</strong> and a <a href="https://www.edstellar.com">link to Edstellar</a>. This should appear as normal rich text in Webflow.</p>
-<div data-rt-embed-type="true">
-<div class='takeaway'>  <p>💡 KEY TAKEAWAYS</p>  <ul>    <li>      Edstellar is the best corporate training company in New Zealand with 2,000+ corporate training courses.    </li>    <li>      This block should appear as a Code Embed in Webflow editor.    </li>  </ul></div>
-</div>
-<p>This is another plain paragraph after the embed. It should appear as normal rich text.</p>'''
-    else:
-        test_html = '''<h2>Test Heading</h2>
-<p>This is a simple test paragraph. If you can see this in the Webflow editor, the field slug is correct.</p>
-<p>Second paragraph with <strong>bold</strong> and <a href="https://www.edstellar.com">a link</a>.</p>'''
-
-    st.code(test_html[:500] + ("..." if len(test_html) > 500 else ""), language="html")
-    st.caption(f"Content size: {len(test_html):,} chars")
-
-    if api_token and test_slug:
-        if st.button("🧪 Push Test Content", key="test_push_btn"):
-            with st.spinner(f"Finding '{test_slug}' and pushing test content..."):
-                item, error = search_item_by_slug(api_token, test_slug)
-            if error:
-                st.error(error)
-            else:
-                item_id = item["id"]
-                item_name = item["fieldData"].get("name", "?")
-                st.caption(f"Found: {item_name} (ID: {item_id})")
-
-                # Use the correct field slug
-                payload = {
-                    "items": [{
-                        "id": item_id,
-                        "fieldData": {
-                            content_field: test_html
-                        }
-                    }]
-                }
-
-                with st.spinner("Pushing..."):
-                    resp = requests.patch(
-                        f"{WEBFLOW_API_BASE}/collections/{COLLECTION_ID}/items",
-                        headers=get_headers(api_token),
-                        json=payload
-                    )
-
-                if resp.status_code == 200:
-                    st.success(f"✅ Test content pushed to '{item_name}' using field `{content_field}`!")
-                    with st.expander("API Response"):
-                        st.json(resp.json())
-                else:
-                    st.error(f"❌ Failed — HTTP {resp.status_code}")
-                    st.code(resp.text, language="json")
-    elif not api_token:
-        st.warning("Enter API token in sidebar first.")
 
 st.divider()
 
@@ -758,16 +667,45 @@ if "stats" in st.session_state and "processed_html" in st.session_state:
             item_id = found_item["id"]
             target = "**LIVE**" if push_live else "**Draft (staged)**"
 
-            st.info(f"**Update:** {item_name} → {target}\n\nItem ID: `{item_id}` | Content: {stats['total_chars']:,} chars")
+            # Build update payload with meta fields
+            update_fields = {"content": processed_html}
 
-            confirm = st.checkbox(f"I confirm: update '{item_name}' content field")
+            # Check if meta fields were edited
+            if "edit_name" in st.session_state and st.session_state["edit_name"] != found_item["fieldData"].get("name", ""):
+                update_fields["name"] = st.session_state["edit_name"]
+            if "edit_slug" in st.session_state and st.session_state["edit_slug"] != found_item["fieldData"].get("slug", ""):
+                update_fields["slug"] = st.session_state["edit_slug"]
+            if "edit_meta_title" in st.session_state and st.session_state["edit_meta_title"] != found_item["fieldData"].get("meta-title", ""):
+                update_fields["meta-title"] = st.session_state["edit_meta_title"]
+            if "edit_meta_desc" in st.session_state and st.session_state["edit_meta_desc"] != found_item["fieldData"].get("meta-description", ""):
+                update_fields["meta-description"] = st.session_state["edit_meta_desc"]
+            if "edit_canonical" in st.session_state and st.session_state["edit_canonical"] != found_item["fieldData"].get("canonical-links", ""):
+                update_fields["canonical-links"] = st.session_state["edit_canonical"]
+
+            # Show what will be updated
+            fields_updating = [k for k in update_fields.keys()]
+            st.info(f"**Update:** {item_name} → {target}\n\nItem ID: `{item_id}` | Fields: {', '.join(fields_updating)}")
+
+            confirm = st.checkbox(f"I confirm: update '{item_name}'")
             if confirm:
                 if st.button("🚀 Push Content Now", type="primary", use_container_width=True):
                     with st.spinner("Pushing to Webflow..."):
-                        resp = update_item_content(api_token, item_id, processed_html, live=push_live)
+                        # Build full payload
+                        if push_live:
+                            url = f"{WEBFLOW_API_BASE}/collections/{COLLECTION_ID}/items/live"
+                        else:
+                            url = f"{WEBFLOW_API_BASE}/collections/{COLLECTION_ID}/items"
+
+                        payload = {
+                            "items": [{
+                                "id": item_id,
+                                "fieldData": update_fields
+                            }]
+                        }
+                        resp = requests.patch(url, headers=get_headers(api_token), json=payload)
 
                     if resp.status_code == 200:
-                        st.success("✅ Content updated successfully!")
+                        st.success("✅ Updated successfully!")
                         st.balloons()
                         with st.expander("API Response"):
                             st.json(resp.json())
