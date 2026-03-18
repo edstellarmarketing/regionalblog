@@ -341,6 +341,32 @@ def update_item_content(token, item_id, content_html, live=False):
     return resp
 
 
+def create_new_item(token, name, slug, content_html, extra_fields=None):
+    """Create a new blog post in the collection."""
+    url = f"{WEBFLOW_API_BASE}/collections/{COLLECTION_ID}/items"
+    headers = get_headers(token)
+
+    field_data = {
+        "name": name,
+        "slug": slug,
+        "content": content_html,
+    }
+
+    # Add optional fields if provided
+    if extra_fields:
+        field_data.update(extra_fields)
+
+    payload = {
+        "items": [{
+            "fieldData": field_data,
+            "isDraft": True,
+        }]
+    }
+
+    resp = requests.post(url, headers=headers, json=payload)
+    return resp
+
+
 # ─── STREAMLIT UI ─────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="Edstellar Blog → Webflow", page_icon="🚀", layout="wide")
@@ -406,23 +432,51 @@ with st.sidebar:
     """)
 
 # Slug input
-slug = st.text_input("🔗 Blog Post Slug",
-                      placeholder="corporate-training-companies-malaysia",
-                      help="Slug of the existing blog post to update")
+# Mode selector
+mode = st.radio("📋 Mode", ["Update Existing Blog", "Create New Blog"], horizontal=True)
 
-# Search
-if slug and api_token:
-    if st.button("🔍 Find Blog Post"):
-        with st.spinner("Searching..."):
-            item, error = search_item_by_slug(api_token, slug)
-        if error:
-            st.error(error)
-        else:
-            st.session_state["found_item"] = item
-            fd = item.get("fieldData", {})
-            st.success(f"✅ **{fd.get('name')}** — ID: `{item['id']}`")
-elif slug and not api_token:
-    st.info("Enter your API token in the sidebar to search.")
+if mode == "Update Existing Blog":
+    slug = st.text_input("🔗 Blog Post Slug",
+                          placeholder="corporate-training-companies-malaysia",
+                          help="Slug of the existing blog post to update")
+
+    if slug and api_token:
+        if st.button("🔍 Find Blog Post"):
+            with st.spinner("Searching..."):
+                item, error = search_item_by_slug(api_token, slug)
+            if error:
+                st.error(error)
+            else:
+                st.session_state["found_item"] = item
+                fd = item.get("fieldData", {})
+                st.success(f"✅ **{fd.get('name')}** — ID: `{item['id']}`")
+    elif slug and not api_token:
+        st.info("Enter your API token in the sidebar to search.")
+
+else:
+    # Create new mode
+    new_name = st.text_input("📝 Blog Post Title (Name)*",
+                              placeholder="11 Best Corporate Training Companies in Malaysia for 2026")
+    new_slug = st.text_input("🔗 Slug*",
+                              placeholder="corporate-training-companies-malaysia",
+                              help="URL slug — lowercase, hyphens, no spaces")
+
+    # Auto-generate slug from name
+    if new_name and not new_slug:
+        auto_slug = re.sub(r'[^a-z0-9]+', '-', new_name.lower()).strip('-')
+        st.caption(f"Auto-slug: `{auto_slug}`")
+
+    with st.expander("Optional Fields"):
+        new_meta_title = st.text_input("Meta Title", placeholder="Same as title if blank")
+        new_meta_desc = st.text_area("Meta Description", placeholder="Short description for SEO", max_chars=300)
+        new_description = st.text_area("Description (excerpt)", placeholder="Short excerpt for listings", max_chars=500)
+        new_canonical = st.text_input("Canonical URL", placeholder="https://www.edstellar.com/blog/your-slug")
+        new_primary_keyword = st.text_input("Primary Keyword", placeholder="corporate training companies malaysia")
+        new_keyword_volume = st.number_input("Keyword Search Volume", min_value=0, value=0)
+        new_format_blog = st.checkbox("New Format Blog", value=True)
+        new_faqs_section = st.checkbox("FAQS Section", value=True)
+
+    slug = new_slug  # for file naming
 
 st.divider()
 
@@ -498,30 +552,73 @@ if "stats" in st.session_state and "processed_html" in st.session_state:
     st.divider()
     st.subheader("🚀 Push to Webflow CMS")
 
-    found_item = st.session_state.get("found_item")
-
     if not api_token:
         st.warning("Enter your Webflow API token in the sidebar.")
-    elif not found_item:
-        st.warning("Search for the blog post first using the slug above.")
-    else:
-        item_name = found_item["fieldData"].get("name", "?")
-        item_id = found_item["id"]
-        target = "**LIVE**" if push_live else "**Draft (staged)**"
+    elif mode == "Update Existing Blog":
+        found_item = st.session_state.get("found_item")
+        if not found_item:
+            st.warning("Search for the blog post first using the slug above.")
+        else:
+            item_name = found_item["fieldData"].get("name", "?")
+            item_id = found_item["id"]
+            target = "**LIVE**" if push_live else "**Draft (staged)**"
 
-        st.info(f"Target: **{item_name}** → {target}\n\nItem ID: `{item_id}` | Content: {stats['total_chars']:,} chars")
+            st.info(f"**Update:** {item_name} → {target}\n\nItem ID: `{item_id}` | Content: {stats['total_chars']:,} chars")
 
-        confirm = st.checkbox(f"I confirm: update '{item_name}' content field")
-        if confirm:
-            if st.button("🚀 Push Content Now", type="primary", use_container_width=True):
-                with st.spinner("Pushing to Webflow..."):
-                    resp = update_item_content(api_token, item_id, processed_html, live=push_live)
+            confirm = st.checkbox(f"I confirm: update '{item_name}' content field")
+            if confirm:
+                if st.button("🚀 Push Content Now", type="primary", use_container_width=True):
+                    with st.spinner("Pushing to Webflow..."):
+                        resp = update_item_content(api_token, item_id, processed_html, live=push_live)
 
-                if resp.status_code == 200:
-                    st.success("✅ Content updated successfully!")
-                    st.balloons()
-                    with st.expander("API Response"):
-                        st.json(resp.json())
-                else:
-                    st.error(f"❌ Failed — HTTP {resp.status_code}")
-                    st.code(resp.text, language="json")
+                    if resp.status_code == 200:
+                        st.success("✅ Content updated successfully!")
+                        st.balloons()
+                        with st.expander("API Response"):
+                            st.json(resp.json())
+                    else:
+                        st.error(f"❌ Failed — HTTP {resp.status_code}")
+                        st.code(resp.text, language="json")
+
+    else:  # Create New Blog
+        if not new_name or not new_slug:
+            st.warning("Title and Slug are required to create a new blog post.")
+        else:
+            # Build extra fields
+            extra = {}
+            if new_meta_title:
+                extra["meta-title"] = new_meta_title
+            if new_meta_desc:
+                extra["meta-description"] = new_meta_desc
+            if new_description:
+                extra["description"] = new_description
+            if new_canonical:
+                extra["canonical-links"] = new_canonical
+            elif new_slug:
+                extra["canonical-links"] = f"https://www.edstellar.com/blog/{new_slug}"
+            if new_primary_keyword:
+                extra["primary-keyword"] = new_primary_keyword
+            if new_keyword_volume:
+                extra["keyword-search-volume"] = new_keyword_volume
+            extra["new-format-blog"] = new_format_blog
+            extra["faqs-section"] = new_faqs_section
+
+            st.info(f"**Create:** {new_name}\n\nSlug: `{new_slug}` | Content: {stats['total_chars']:,} chars | Status: Draft")
+
+            fields_summary = ", ".join(f"{k}" for k in extra.keys() if extra[k])
+            st.caption(f"Extra fields: {fields_summary}")
+
+            confirm = st.checkbox(f"I confirm: create new blog post '{new_name}'")
+            if confirm:
+                if st.button("🚀 Create Blog Post", type="primary", use_container_width=True):
+                    with st.spinner("Creating in Webflow..."):
+                        resp = create_new_item(api_token, new_name, new_slug, processed_html, extra)
+
+                    if resp.status_code in (200, 201, 202):
+                        st.success("✅ Blog post created as Draft!")
+                        st.balloons()
+                        with st.expander("API Response"):
+                            st.json(resp.json())
+                    else:
+                        st.error(f"❌ Failed — HTTP {resp.status_code}")
+                        st.code(resp.text, language="json")
