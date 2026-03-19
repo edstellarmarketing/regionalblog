@@ -1010,9 +1010,41 @@ else:
 st.divider()
 
 # Upload - two options
-upload_type = st.radio("📤 Upload Type", ["HTML File (auto-converts)", "CSV (pre-formatted Webflow content)"], horizontal=True)
+upload_type = st.radio("📤 Upload Type", [
+    "Webflow-Ready HTML (direct push)",
+    "Raw HTML (auto-converts)",
+    "CSV (pre-formatted)",
+], horizontal=True)
 
-if upload_type == "HTML File (auto-converts)":
+if upload_type == "Webflow-Ready HTML (direct push)":
+    uploaded_file = st.file_uploader("📄 Upload Webflow-Ready HTML", type=["html", "htm"],
+                                      help="HTML already formatted with data-rt-embed-type wrappers")
+
+    if uploaded_file:
+        raw_html = uploaded_file.read().decode("utf-8")
+        st.caption(f"Loaded **{uploaded_file.name}** — {len(raw_html):,} characters")
+
+        # Parse directly — no conversion needed
+        block_soup = BeautifulSoup(raw_html, "html.parser")
+        blocks_list = []
+        for element in block_soup.children:
+            if isinstance(element, NavigableString):
+                continue
+            if not isinstance(element, Tag):
+                continue
+            is_embed = element.get("data-rt-embed-type") == "true"
+            blocks_list.append({
+                "type": "embed" if is_embed else "plain",
+                "html": str(element),
+                "tag": element.name,
+                "preview": element.get_text()[:100].replace("\n", " ").strip(),
+                "chars": len(str(element)),
+            })
+
+        st.session_state["blocks"] = blocks_list
+        st.success(f"✅ {len(blocks_list)} blocks loaded directly (no conversion)")
+
+elif upload_type == "Raw HTML (auto-converts)":
     uploaded_file = st.file_uploader("📄 Upload Blog HTML", type=["html", "htm"])
 
     if uploaded_file:
@@ -1092,8 +1124,7 @@ if upload_type == "HTML File (auto-converts)":
                 }
                 st.rerun()
 
-else:
-    # CSV upload — pre-formatted Webflow content
+else:  # CSV (pre-formatted)
     uploaded_csv = st.file_uploader("📄 Upload Content CSV", type=["csv"])
 
     if uploaded_csv:
